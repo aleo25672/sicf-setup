@@ -1,0 +1,3 @@
+# Ignore OS / editor noise; abapGit IGNORE list handles docs/examples.
+.DS_Store
+*.swp
