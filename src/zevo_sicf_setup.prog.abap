@@ -65,6 +65,9 @@ PARAMETERS p_b8 TYPE text255 LOWER CASE MODIF ID bch.
 SELECTION-SCREEN END OF BLOCK b.
 
 SELECTION-SCREEN BEGIN OF BLOCK o WITH FRAME TITLE TEXT-007.
+PARAMETERS:
+  p_pack TYPE devclass,
+  p_tr   TYPE trkorr.
 SELECTION-SCREEN BEGIN OF LINE.
 PARAMETERS p_actv AS CHECKBOX DEFAULT 'X'.
 SELECTION-SCREEN COMMENT 3(40) c_actv FOR FIELD p_actv.
@@ -85,7 +88,7 @@ INITIALIZATION.
   c_actv  = 'Activate after save'(016).
   c_dry   = 'Dry-run (no changes)'(017).
 
-  " Apply repo / fork defaults from ZEVO_SICF_SETUP_CFG when set
+  " Apply defaults from ZEVO_SICF_SETUP_CFG when set
   IF gc_sicf_cfg_url IS NOT INITIAL.
     p_url = gc_sicf_cfg_url.
   ENDIF.
@@ -186,7 +189,9 @@ FORM run.
 
     WHEN OTHERS. " ensure
       LOOP AT lt_defs INTO ls_def.
-        ls_def-activate = boolc( p_actv = abap_true ).
+        ls_def-activate  = boolc( p_actv = abap_true ).
+        ls_def-package   = p_pack.
+        ls_def-transport = p_tr.
         ls_res = zevo_cl_sicf_setup=>ensure(
                    is_def     = ls_def
                    iv_dry_run = boolc( p_dry = abap_true ) ).

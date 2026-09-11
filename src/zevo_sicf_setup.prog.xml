@@ -125,6 +125,18 @@
     </item>
     <item>
      <ID>S</ID>
+     <KEY>P_PACK</KEY>
+     <ENTRY>Package (blank = parent)</ENTRY>
+     <LENGTH>32</LENGTH>
+    </item>
+    <item>
+     <ID>S</ID>
+     <KEY>P_TR</KEY>
+     <ENTRY>Transport request (optional)</ENTRY>
+     <LENGTH>36</LENGTH>
+    </item>
+    <item>
+     <ID>S</ID>
      <KEY>P_B1</KEY>
      <ENTRY>Batch line 1</ENTRY>
      <LENGTH>20</LENGTH>

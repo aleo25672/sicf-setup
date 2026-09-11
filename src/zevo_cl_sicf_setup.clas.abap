@@ -1,7 +1,7 @@
 *&---------------------------------------------------------------------*
 *& Class ZEVO_CL_SICF_SETUP
 *&---------------------------------------------------------------------*
-*& Generic ICF / SICF administrator — standalone tool (own abapGit repo).
+*& Generic ICF / SICF administrator — standalone tool.
 *&
 *& Call from report ZEVO_SICF_SETUP, or from any project post-install:
 *&   DATA(ls) = zevo_cl_sicf_setup=>ensure( is_def = … ).
@@ -10,8 +10,12 @@
 *& SICF is not covered by abapGit; this class closes that gap.
 *& Requires ICF admin authorization (e.g. S_ICF_ADM).
 *&
-*& CL_ICF_TREE method names differ by BASIS release — methods are invoked
-*& dynamically with common fallbacks; failures return a clear message.
+*& Uses the released SAP APIs:
+*&   CL_ICF_TREE=>IF_ICF_TREE~SERVICE_FROM_URL   locate node from a path
+*&   CL_ICF_TREE=>IF_ICF_TREE~GET_INFO_FROM_SERV read node settings
+*&   CL_ICF_TREE=>IF_ICF_TREE~INSERT_NODE        create node
+*&   CL_ICF_TREE=>IF_ICF_TREE~CHANGE_NODE        update node
+*&   HTTP_ACTIVATE_NODE / HTTP_INACTIVATE_NODE   activation state
 *&---------------------------------------------------------------------*
 CLASS zevo_cl_sicf_setup DEFINITION
   PUBLIC
@@ -19,6 +23,9 @@ CLASS zevo_cl_sicf_setup DEFINITION
   CREATE PUBLIC.
 
   PUBLIC SECTION.
+    "! ICFNAME is CHAR15, so a single path segment cannot be longer
+    CONSTANTS gc_max_name_len TYPE i VALUE 15.
+
     TYPES: BEGIN OF ty_handler,
              classname TYPE seoclsname,
            END OF ty_handler.
@@ -29,6 +36,8 @@ CLASS zevo_cl_sicf_setup DEFINITION
              description TYPE string,
              handlers    TYPE ty_handlers,
              activate    TYPE abap_bool,
+             package     TYPE devclass,
+             transport   TYPE trkorr,
            END OF ty_service_def.
     TYPES ty_service_defs TYPE STANDARD TABLE OF ty_service_def WITH DEFAULT KEY.
 
@@ -92,6 +101,61 @@ CLASS zevo_cl_sicf_setup DEFINITION
   PRIVATE SECTION.
     TYPES ty_icfhandlers TYPE STANDARD TABLE OF icfhandler WITH DEFAULT KEY.
 
+    "! SERVICE_FROM_URL returns the deepest node that exists on the path.
+    "! ev_suffix holds the part of the path that does not exist yet, so
+    "! ev_guid doubles as "the node" and "the parent of a missing node".
+    CLASS-METHODS resolve
+      IMPORTING
+        iv_url     TYPE clike
+      EXPORTING
+        ev_guid    TYPE icfnodguid
+        ev_exists  TYPE abap_bool
+        ev_active  TYPE abap_bool
+        ev_suffix  TYPE string
+        ev_ok      TYPE abap_bool
+        ev_message TYPE string.
+
+    CLASS-METHODS read_node
+      IMPORTING
+        iv_guid     TYPE icfnodguid
+      EXPORTING
+        es_service  TYPE icfservice
+        es_docu     TYPE icfdocu
+        et_handlers TYPE ty_icfhandlers
+        ev_ok       TYPE abap_bool
+        ev_message  TYPE string.
+
+    CLASS-METHODS create_node
+      IMPORTING
+        is_def         TYPE ty_service_def
+        iv_parent_guid TYPE icfnodguid
+        iv_name        TYPE icfname
+        it_handlers    TYPE icfhndlist
+        iv_description TYPE clike
+      EXPORTING
+        ev_guid        TYPE icfnodguid
+        ev_ok          TYPE abap_bool
+        ev_message     TYPE string.
+
+    CLASS-METHODS update_node
+      IMPORTING
+        is_def         TYPE ty_service_def
+        iv_guid        TYPE icfnodguid
+        it_handlers    TYPE icfhndlist
+        iv_description TYPE clike
+        iv_active      TYPE abap_bool
+      EXPORTING
+        ev_ok          TYPE abap_bool
+        ev_message     TYPE string.
+
+    CLASS-METHODS set_active
+      IMPORTING
+        iv_guid    TYPE icfnodguid
+        iv_active  TYPE abap_bool
+      EXPORTING
+        ev_ok      TYPE abap_bool
+        ev_message TYPE string.
+
     CLASS-METHODS split_url
       IMPORTING
         iv_url     TYPE clike
@@ -101,62 +165,28 @@ CLASS zevo_cl_sicf_setup DEFINITION
         ev_ok      TYPE abap_bool
         ev_message TYPE string.
 
-    CLASS-METHODS tree_from_url
-      IMPORTING
-        iv_url         TYPE clike
-      RETURNING
-        VALUE(ro_tree) TYPE REF TO object.
-
-    CLASS-METHODS build_handler_tab
+    CLASS-METHODS build_handler_list
       IMPORTING
         it_handlers   TYPE ty_handlers
       RETURNING
-        VALUE(rt_icf) TYPE ty_icfhandlers.
+        VALUE(rt_list) TYPE icfhndlist.
 
-    CLASS-METHODS invoke
+    "! SICF expects the description at the start of the ICFDOCU structure
+    CLASS-METHODS build_docu
       IMPORTING
-        io_obj     TYPE REF TO object
-        iv_method  TYPE seocpdname
-        it_params  TYPE abap_parmbind_tab OPTIONAL
-      EXPORTING
-        ev_ok      TYPE abap_bool
-        ev_message TYPE string.
+        iv_text        TYPE clike
+      RETURNING
+        VALUE(rs_docu) TYPE icfdocu.
 
-    CLASS-METHODS set_docu_fields
+    CLASS-METHODS segment_count
       IMPORTING
-        iv_text TYPE clike
-      CHANGING
-        cs_docu TYPE icfdocu.
+        iv_path         TYPE clike
+      RETURNING
+        VALUE(rv_count) TYPE i.
 
-    CLASS-METHODS read_docu_text
-      IMPORTING
-        is_docu        TYPE icfdocu
+    CLASS-METHODS api_message
       RETURNING
         VALUE(rv_text) TYPE string.
-
-    CLASS-METHODS create_child
-      IMPORTING
-        io_parent      TYPE REF TO object
-        iv_name        TYPE icfname
-      EXPORTING
-        eo_child       TYPE REF TO object
-        ev_ok          TYPE abap_bool
-        ev_message     TYPE string.
-
-    CLASS-METHODS set_handlers
-      IMPORTING
-        io_svc         TYPE REF TO object
-        it_hand        TYPE ty_icfhandlers
-      EXPORTING
-        ev_ok          TYPE abap_bool
-        ev_message     TYPE string.
-
-    CLASS-METHODS save_node
-      IMPORTING
-        io_svc         TYPE REF TO object
-      EXPORTING
-        ev_ok          TYPE abap_bool
-        ev_message     TYPE string.
 ENDCLASS.
 
 
@@ -204,6 +234,29 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD segment_count.
+    DATA: lv_path TYPE string,
+          lt_part TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+
+    lv_path = iv_path.
+    SPLIT lv_path AT '/' INTO TABLE lt_part.
+    DELETE lt_part WHERE table_line IS INITIAL.
+    rv_count = lines( lt_part ).
+  ENDMETHOD.
+
+
+  METHOD api_message.
+    " Classic exceptions leave the failure text in SY-MSG*
+    IF sy-msgid IS INITIAL OR sy-msgno IS INITIAL.
+      CLEAR rv_text.
+      RETURN.
+    ENDIF.
+    MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+            INTO rv_text.
+  ENDMETHOD.
+
+
   METHOD split_url.
     DATA: lv_url  TYPE string,
           lt_part TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
@@ -229,8 +282,12 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ENDIF.
 
     READ TABLE lt_part INTO lv_last INDEX lv_cnt.
+    IF strlen( lv_last ) > gc_max_name_len.
+      ev_message = |Node name '{ lv_last }' is longer than { gc_max_name_len } characters (SICF ICFNAME).|.
+      RETURN.
+    ENDIF.
+    " Keep the case as typed: ICF node names are conventionally lower case
     ev_name = lv_last.
-    TRANSLATE ev_name TO UPPER CASE.
     DELETE lt_part INDEX lv_cnt.
 
     CLEAR ev_parent.
@@ -244,385 +301,446 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
   ENDMETHOD.
 
 
-  METHOD tree_from_url.
-    DATA: lv_url  TYPE string,
-          lt_parm TYPE abap_parmbind_tab,
-          ls_parm TYPE abap_parmbind,
-          lo_tree TYPE REF TO object,
-          lv_meth TYPE seocpdname,
-          lt_meth TYPE STANDARD TABLE OF seocpdname WITH DEFAULT KEY,
-          lt_purl TYPE STANDARD TABLE OF abap_parmname WITH DEFAULT KEY,
-          lt_ptree TYPE STANDARD TABLE OF abap_parmname WITH DEFAULT KEY,
-          lv_purl TYPE abap_parmname,
-          lv_ptree TYPE abap_parmname.
-
-    CLEAR ro_tree.
-    lv_url = normalize_url( iv_url ).
-    IF lv_url IS INITIAL.
-      RETURN.
-    ENDIF.
-
-    " Common static entry points / parameter names across BASIS releases
-    APPEND 'IF_ICF_TREE~SERVICE_FROM_URL' TO lt_meth.
-    APPEND 'SERVICE_FROM_URL' TO lt_meth.
-    APPEND 'GET_NODE_BY_URL' TO lt_meth.
-
-    APPEND 'URL' TO lt_purl.
-    APPEND 'I_URL' TO lt_purl.
-    APPEND 'IV_URL' TO lt_purl.
-
-    APPEND 'TREE' TO lt_ptree.
-    APPEND 'NODE' TO lt_ptree.
-    APPEND 'E_ICF_TREE' TO lt_ptree.
-    APPEND 'EO_TREE' TO lt_ptree.
-
-    LOOP AT lt_meth INTO lv_meth.
-      LOOP AT lt_purl INTO lv_purl.
-        LOOP AT lt_ptree INTO lv_ptree.
-          CLEAR: lt_parm, lo_tree.
-
-          ls_parm-name = lv_purl.
-          ls_parm-kind = cl_abap_objectdescr=>exporting.
-          GET REFERENCE OF lv_url INTO ls_parm-value.
-          INSERT ls_parm INTO TABLE lt_parm.
-
-          ls_parm-name = lv_ptree.
-          ls_parm-kind = cl_abap_objectdescr=>receiving.
-          GET REFERENCE OF lo_tree INTO ls_parm-value.
-          INSERT ls_parm INTO TABLE lt_parm.
-
-          TRY.
-              CALL METHOD cl_icf_tree=>(lv_meth)
-                PARAMETER-TABLE lt_parm.
-              IF lo_tree IS BOUND.
-                ro_tree = lo_tree.
-                RETURN.
-              ENDIF.
-            CATCH cx_sy_dyn_call_error cx_root.           "#EC NO_HANDLER
-          ENDTRY.
-        ENDLOOP.
-      ENDLOOP.
-    ENDLOOP.
-  ENDMETHOD.
-
-
-  METHOD build_handler_tab.
+  METHOD build_handler_list.
     DATA: ls_in  TYPE ty_handler,
-          ls_icf TYPE icfhandler,
-          lv_pos TYPE i,
-          lv_cls TYPE seoclsname.
-    FIELD-SYMBOLS <fs> TYPE any.
+          lv_cls TYPE icfhandler-icfhandler.
 
-    CLEAR rt_icf.
+    CLEAR rt_list.
     LOOP AT it_handlers INTO ls_in WHERE classname IS NOT INITIAL.
-      CLEAR ls_icf.
-      lv_pos = lv_pos + 1.
       lv_cls = ls_in-classname.
       TRANSLATE lv_cls TO UPPER CASE.
-
-      ASSIGN COMPONENT 'ICFORDER' OF STRUCTURE ls_icf TO <fs>.
-      IF sy-subrc = 0.
-        <fs> = lv_pos.
+      READ TABLE rt_list FROM lv_cls TRANSPORTING NO FIELDS.
+      IF sy-subrc <> 0.
+        INSERT lv_cls INTO TABLE rt_list.
       ENDIF.
-
-      ASSIGN COMPONENT 'ICFHANDLER' OF STRUCTURE ls_icf TO <fs>.
-      IF sy-subrc = 0.
-        <fs> = lv_cls.
-      ENDIF.
-
-      APPEND ls_icf TO rt_icf.
     ENDLOOP.
   ENDMETHOD.
 
 
-  METHOD set_docu_fields.
-    FIELD-SYMBOLS <fs> TYPE any.
+  METHOD build_docu.
+    DATA ls_full TYPE icfdocu.
 
-    UNASSIGN <fs>.
-    ASSIGN COMPONENT 'ICF_LANGU' OF STRUCTURE cs_docu TO <fs>.
-    IF sy-subrc <> 0.
-      ASSIGN COMPONENT 'LANGU' OF STRUCTURE cs_docu TO <fs>.
-    ENDIF.
-    IF <fs> IS ASSIGNED.
-      <fs> = sy-langu.
-    ENDIF.
-
-    UNASSIGN <fs>.
-    ASSIGN COMPONENT 'ICF_DOCU' OF STRUCTURE cs_docu TO <fs>.
-    IF sy-subrc <> 0.
-      ASSIGN COMPONENT 'ICFDOCU' OF STRUCTURE cs_docu TO <fs>.
-    ENDIF.
-    IF <fs> IS ASSIGNED.
-      <fs> = iv_text.
-    ENDIF.
+    ls_full-icf_docu = iv_text.
+    rs_docu = ls_full-icf_docu.
   ENDMETHOD.
 
 
-  METHOD read_docu_text.
-    FIELD-SYMBOLS <fs> TYPE any.
+  METHOD resolve.
+    DATA: lv_url    TYPE string,
+          lv_guid   TYPE icfnodguid,
+          lv_active TYPE icfactive,
+          lv_suffix TYPE icfredurl.
 
-    CLEAR rv_text.
-    ASSIGN COMPONENT 'ICF_DOCU' OF STRUCTURE is_docu TO <fs>.
-    IF sy-subrc <> 0.
-      ASSIGN COMPONENT 'ICFDOCU' OF STRUCTURE is_docu TO <fs>.
-    ENDIF.
-    IF <fs> IS ASSIGNED.
-      rv_text = <fs>.
-    ENDIF.
-  ENDMETHOD.
-
-
-  METHOD invoke.
-    DATA lx TYPE REF TO cx_root.
-    CLEAR ev_message.
+    CLEAR: ev_guid, ev_exists, ev_active, ev_suffix, ev_message.
     ev_ok = abap_false.
-    IF io_obj IS NOT BOUND OR iv_method IS INITIAL.
-      ev_message = 'Object or method initial.'.
+
+    lv_url = normalize_url( iv_url ).
+    IF lv_url IS INITIAL.
+      ev_message = 'URL is empty.'.
       RETURN.
     ENDIF.
-    TRY.
-        IF it_params IS SUPPLIED AND it_params IS NOT INITIAL.
-          CALL METHOD io_obj->(iv_method) PARAMETER-TABLE it_params.
-        ELSE.
-          CALL METHOD io_obj->(iv_method).
-        ENDIF.
+
+    cl_icf_tree=>if_icf_tree~service_from_url(
+      EXPORTING
+        url                   = lv_url
+        hostnumber            = 0
+      IMPORTING
+        icfnodguid            = lv_guid
+        icfactive             = lv_active
+        urlsuffix             = lv_suffix
+      EXCEPTIONS
+        wrong_application     = 1
+        no_application        = 2
+        not_allow_application = 3
+        wrong_url             = 4
+        no_authority          = 5
+        OTHERS                = 6 ).
+    CASE sy-subrc.
+      WHEN 0.
         ev_ok = abap_true.
-      CATCH cx_root INTO lx.
-        ev_message = |{ iv_method }: { lx->get_text( ) }|.
-    ENDTRY.
+      WHEN 4.
+        ev_message = |SICF rejected the path '{ lv_url }' (wrong URL).|.
+        RETURN.
+      WHEN 5.
+        ev_message = 'No authorization to read the ICF tree (S_ICF_ADM).'.
+        RETURN.
+      WHEN OTHERS.
+        ev_message = |Cannot read ICF tree: { api_message( ) }|.
+        RETURN.
+    ENDCASE.
+
+    ev_guid   = lv_guid.
+    ev_active = boolc( lv_active = abap_true ).
+    ev_suffix = lv_suffix.
+    ev_exists = boolc( lv_suffix IS INITIAL AND lv_guid IS NOT INITIAL ).
   ENDMETHOD.
 
 
-  METHOD create_child.
-    DATA: lt_parm  TYPE abap_parmbind_tab,
-          ls_parm  TYPE abap_parmbind,
-          lo_child TYPE REF TO object,
-          lv_meth  TYPE seocpdname,
-          lt_meth  TYPE STANDARD TABLE OF seocpdname WITH DEFAULT KEY,
-          lt_pname TYPE STANDARD TABLE OF abap_parmname WITH DEFAULT KEY,
-          lt_rname TYPE STANDARD TABLE OF abap_parmname WITH DEFAULT KEY,
-          lv_pname TYPE abap_parmname,
-          lv_rname TYPE abap_parmname,
-          lv_last  TYPE string.
+  METHOD read_node.
+    DATA: lv_name    TYPE icfname,
+          lv_parguid TYPE icfparguid,
+          lt_serv    TYPE icfservtbl,
+          lv_url     TYPE string.
+    DATA ls_serv LIKE LINE OF lt_serv.
 
-    CLEAR: eo_child, ev_message.
+    CLEAR: es_service, es_docu, et_handlers, ev_message.
     ev_ok = abap_false.
 
-    APPEND 'INSERT_NODE' TO lt_meth.
-    APPEND 'CREATE_NODE' TO lt_meth.
-    APPEND 'ADD_NODE' TO lt_meth.
+    SELECT SINGLE icf_name icfparguid FROM icfservice
+           INTO (lv_name, lv_parguid)
+           WHERE icfnodguid = iv_guid.
+    IF sy-subrc <> 0.
+      ev_message = 'ICF node not found in ICFSERVICE.'.
+      RETURN.
+    ENDIF.
 
-    APPEND 'ICFNAME' TO lt_pname.
-    APPEND 'NAME' TO lt_pname.
-    APPEND 'I_ICFNAME' TO lt_pname.
+    cl_icf_tree=>if_icf_tree~get_info_from_serv(
+      EXPORTING
+        icf_name          = lv_name
+        icfparguid        = lv_parguid
+        icf_langu         = sy-langu
+      IMPORTING
+        serv_info         = lt_serv
+        icfdocu           = es_docu
+        url               = lv_url
+      EXCEPTIONS
+        wrong_name        = 1
+        wrong_parguid     = 2
+        incorrect_service = 3
+        no_authority      = 4
+        OTHERS            = 5 ).
+    IF sy-subrc <> 0.
+      ev_message = |Cannot read ICF node: { api_message( ) }|.
+      RETURN.
+    ENDIF.
 
-    APPEND 'NODE' TO lt_rname.
-    APPEND 'TREE' TO lt_rname.
-    APPEND 'SERVICE' TO lt_rname.
+    READ TABLE lt_serv INTO ls_serv INDEX 1.
+    IF sy-subrc <> 0.
+      ev_message = 'ICF node returned no service data.'.
+      RETURN.
+    ENDIF.
 
-    LOOP AT lt_meth INTO lv_meth.
-      LOOP AT lt_pname INTO lv_pname.
-        LOOP AT lt_rname INTO lv_rname.
-          CLEAR: lt_parm, lo_child.
-
-          ls_parm-name = lv_pname.
-          ls_parm-kind = cl_abap_objectdescr=>exporting.
-          GET REFERENCE OF iv_name INTO ls_parm-value.
-          INSERT ls_parm INTO TABLE lt_parm.
-
-          ls_parm-name = lv_rname.
-          ls_parm-kind = cl_abap_objectdescr=>receiving.
-          GET REFERENCE OF lo_child INTO ls_parm-value.
-          INSERT ls_parm INTO TABLE lt_parm.
-
-          invoke(
-            EXPORTING io_obj = io_parent iv_method = lv_meth it_params = lt_parm
-            IMPORTING ev_ok = ev_ok ev_message = lv_last ).
-          IF ev_ok = abap_true AND lo_child IS BOUND.
-            eo_child = lo_child.
-            CLEAR ev_message.
-            RETURN.
-          ENDIF.
-        ENDLOOP.
-      ENDLOOP.
-    ENDLOOP.
-
-    ev_ok = abap_false.
-    ev_message = |Cannot create child node: { lv_last }|.
+    MOVE-CORRESPONDING ls_serv-service TO es_service.
+    APPEND LINES OF ls_serv-handlertbl TO et_handlers.
+    ev_ok = abap_true.
   ENDMETHOD.
 
 
-  METHOD set_handlers.
-    DATA: lt_parm TYPE abap_parmbind_tab,
-          ls_parm TYPE abap_parmbind,
-          lv_meth TYPE seocpdname,
-          lv_pname TYPE abap_parmname,
-          lt_meth TYPE STANDARD TABLE OF seocpdname WITH DEFAULT KEY,
-          lt_pname TYPE STANDARD TABLE OF abap_parmname WITH DEFAULT KEY,
-          lv_last TYPE string.
+  METHOD create_node.
+    DATA: ls_serdesc   TYPE icfserdesc,
+          ls_docu      TYPE icfdocu,
+          lv_transport TYPE trkorr,
+          lv_active    TYPE icfactive,
+          lv_desc      TYPE string.
+
+    CLEAR: ev_guid, ev_message.
+    ev_ok = abap_false.
+
+    lv_desc = iv_description.
+    IF lv_desc IS INITIAL.
+      lv_desc = iv_name.
+    ENDIF.
+    ls_docu      = build_docu( lv_desc ).
+    lv_transport = is_def-transport.
+    lv_active    = boolc( is_def-activate = abap_true ).
+
+    cl_icf_tree=>if_icf_tree~insert_node(
+      EXPORTING
+        icf_name                  = iv_name
+        icfparguid                = iv_parent_guid
+        icfdocu                   = ls_docu
+        doculang                  = sy-langu
+        icfhandlst                = it_handlers
+        package                   = is_def-package
+        application               = space
+        icfserdesc                = ls_serdesc
+        icfactive                 = lv_active
+      IMPORTING
+        icfnodguid                = ev_guid
+      CHANGING
+        transport                 = lv_transport
+      EXCEPTIONS
+        empty_icf_name            = 1
+        no_new_virtual_host       = 2
+        special_service_error     = 3
+        parent_not_existing       = 4
+        enqueue_error             = 5
+        node_already_existing     = 6
+        empty_docu                = 7
+        doculang_not_installed    = 8
+        security_info_error       = 9
+        user_password_error       = 10
+        password_encryption_error = 11
+        invalid_url               = 12
+        invalid_otr_concept       = 13
+        formflg401_error          = 14
+        handler_error             = 15
+        transport_error           = 16
+        tadir_error               = 17
+        package_not_found         = 18
+        wrong_application         = 19
+        not_allow_application     = 20
+        no_application            = 21
+        invalid_icfparguid        = 22
+        alt_name_invalid          = 23
+        alternate_name_exist      = 24
+        wrong_icf_name            = 25
+        no_authority              = 26
+        OTHERS                    = 27 ).
+    CASE sy-subrc.
+      WHEN 0.
+        ev_ok = abap_true.
+      WHEN 15.
+        ev_message = 'Handler class rejected — check that it exists and implements IF_HTTP_EXTENSION.'.
+      WHEN 16 OR 17.
+        ev_message = |Transport check failed: { api_message( ) } Supply a request, or use a local package.|.
+      WHEN 18.
+        ev_message = |Package '{ is_def-package }' does not exist.|.
+      WHEN 25.
+        ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
+      WHEN 26.
+        ev_message = 'No authorization to create ICF nodes (S_ICF_ADM).'.
+      WHEN OTHERS.
+        ev_message = |Cannot create ICF node: { api_message( ) }|.
+    ENDCASE.
+  ENDMETHOD.
+
+
+  METHOD update_node.
+    DATA: ls_service   TYPE icfservice,
+          ls_docu_read TYPE icfdocu,
+          lt_existing  TYPE ty_icfhandlers,
+          ls_existing  TYPE icfhandler,
+          lt_handlers  TYPE icfhndlist,
+          ls_serdesc   TYPE icfserdesc,
+          ls_docu      TYPE icfdocu,
+          lv_transport TYPE trkorr,
+          lv_active    TYPE icfactive,
+          lv_desc      TYPE string,
+          lv_ok        TYPE abap_bool,
+          lv_msg       TYPE string.
 
     CLEAR ev_message.
     ev_ok = abap_false.
 
-    APPEND 'SET_HANDLERLIST' TO lt_meth.
-    APPEND 'SET_HANDLER_LIST' TO lt_meth.
+    read_node(
+      EXPORTING iv_guid     = iv_guid
+      IMPORTING es_service  = ls_service
+                es_docu     = ls_docu_read
+                et_handlers = lt_existing
+                ev_ok       = lv_ok
+                ev_message  = lv_msg ).
+    IF lv_ok = abap_false.
+      ev_message = lv_msg.
+      RETURN.
+    ENDIF.
 
-    APPEND 'HANDLERLIST' TO lt_pname.
-    APPEND 'HANDLER_LIST' TO lt_pname.
-    APPEND 'HANDLERS' TO lt_pname.
-
-    LOOP AT lt_meth INTO lv_meth.
-      LOOP AT lt_pname INTO lv_pname.
-        CLEAR lt_parm.
-        ls_parm-name = lv_pname.
-        ls_parm-kind = cl_abap_objectdescr=>exporting.
-        GET REFERENCE OF it_hand INTO ls_parm-value.
-        INSERT ls_parm INTO TABLE lt_parm.
-
-        invoke(
-          EXPORTING io_obj = io_svc iv_method = lv_meth it_params = lt_parm
-          IMPORTING ev_ok = ev_ok ev_message = lv_last ).
-        IF ev_ok = abap_true.
-          CLEAR ev_message.
-          RETURN.
-        ENDIF.
-      ENDLOOP.
+    " Re-sending a handler that is already assigned makes CHANGE_NODE fail
+    lt_handlers = it_handlers.
+    LOOP AT lt_existing INTO ls_existing.
+      DELETE TABLE lt_handlers FROM ls_existing-icfhandler.
     ENDLOOP.
 
-    ev_ok = abap_false.
-    ev_message = lv_last.
+    lv_desc = iv_description.
+    IF lv_desc IS INITIAL.
+      lv_desc = ls_docu_read-icf_docu.
+    ENDIF.
+    IF lv_desc IS INITIAL.
+      lv_desc = ls_service-icf_name.
+    ENDIF.
+
+    MOVE-CORRESPONDING ls_service TO ls_serdesc.
+    ls_docu      = build_docu( lv_desc ).
+    lv_transport = is_def-transport.
+    " The checkbox activates; it never deactivates a running service
+    IF is_def-activate = abap_true OR iv_active = abap_true.
+      lv_active = abap_true.
+    ELSE.
+      lv_active = space.
+    ENDIF.
+
+    cl_icf_tree=>if_icf_tree~change_node(
+      EXPORTING
+        icf_name                  = ls_service-icf_name
+        icfaltnme                 = ls_service-icfaltnme
+        icfparguid                = ls_service-icfparguid
+        icfdocu                   = ls_docu
+        doculang                  = sy-langu
+        icfhandlst                = lt_handlers
+        package                   = is_def-package
+        application               = space
+        icfserdesc                = ls_serdesc
+        icfactive                 = lv_active
+      CHANGING
+        transport                 = lv_transport
+      EXCEPTIONS
+        empty_icf_name            = 1
+        no_new_virtual_host       = 2
+        special_service_error     = 3
+        parent_not_existing       = 4
+        enqueue_error             = 5
+        node_already_existing     = 6
+        empty_docu                = 7
+        doculang_not_installed    = 8
+        security_info_error       = 9
+        user_password_error       = 10
+        password_encryption_error = 11
+        invalid_url               = 12
+        invalid_otr_concept       = 13
+        formflg401_error          = 14
+        handler_error             = 15
+        transport_error           = 16
+        tadir_error               = 17
+        package_not_found         = 18
+        wrong_application         = 19
+        not_allow_application     = 20
+        no_application            = 21
+        invalid_icfparguid        = 22
+        alt_name_invalid          = 23
+        alternate_name_exist      = 24
+        wrong_icf_name            = 25
+        no_authority              = 26
+        OTHERS                    = 27 ).
+    CASE sy-subrc.
+      WHEN 0.
+        ev_ok = abap_true.
+      WHEN 5.
+        ev_message = 'ICF node is locked by another user (enqueue error).'.
+      WHEN 15.
+        ev_message = 'Handler class rejected — check that it exists and implements IF_HTTP_EXTENSION.'.
+      WHEN 16 OR 17.
+        ev_message = |Transport check failed: { api_message( ) } Supply a request, or use a local package.|.
+      WHEN 26.
+        ev_message = 'No authorization to change ICF nodes (S_ICF_ADM).'.
+      WHEN OTHERS.
+        ev_message = |Cannot update ICF node: { api_message( ) }|.
+    ENDCASE.
   ENDMETHOD.
 
 
-  METHOD save_node.
-    DATA lv_msg TYPE string.
-
+  METHOD set_active.
     CLEAR ev_message.
     ev_ok = abap_false.
 
-    invoke(
-      EXPORTING io_obj = io_svc iv_method = 'ORDER_SAVE'
-      IMPORTING ev_ok = ev_ok ev_message = lv_msg ).
-    IF ev_ok = abap_true.
-      RETURN.
+    IF iv_active = abap_true.
+      CALL FUNCTION 'HTTP_ACTIVATE_NODE'
+        EXPORTING
+          nodeguid                 = iv_guid
+          hostname                 = 'DEFAULT_HOST'
+          expand                   = space
+        EXCEPTIONS
+          node_not_existing        = 1
+          enqueue_error            = 2
+          no_authority             = 3
+          url_and_nodeguid_space   = 4
+          url_and_nodeguid_fill_in = 5
+          OTHERS                   = 6.
+    ELSE.
+      CALL FUNCTION 'HTTP_INACTIVATE_NODE'
+        EXPORTING
+          nodeguid                 = iv_guid
+          hostname                 = 'DEFAULT_HOST'
+          expand                   = space
+          force_deactivation       = space
+        EXCEPTIONS
+          node_not_existing        = 1
+          enqueue_error            = 2
+          no_authority             = 3
+          url_and_nodeguid_space   = 4
+          url_and_nodeguid_fill_in = 5
+          OTHERS                   = 6.
     ENDIF.
 
-    invoke(
-      EXPORTING io_obj = io_svc iv_method = 'SAVE'
-      IMPORTING ev_ok = ev_ok ev_message = lv_msg ).
-    IF ev_ok = abap_true.
-      RETURN.
-    ENDIF.
-
-    ev_message = lv_msg.
+    CASE sy-subrc.
+      WHEN 0.
+        COMMIT WORK AND WAIT.
+        ev_ok = abap_true.
+      WHEN 1.
+        ev_message = 'ICF node does not exist.'.
+      WHEN 2.
+        ev_message = 'ICF node is locked by another user (enqueue error).'.
+      WHEN 3.
+        ev_message = 'No authorization to activate ICF nodes (S_ICF_ADM).'.
+      WHEN OTHERS.
+        ev_message = |Activation call failed: { api_message( ) }|.
+    ENDCASE.
   ENDMETHOD.
 
 
   METHOD get_status.
-    DATA: lo_tree    TYPE REF TO object,
-          lt_handler TYPE ty_icfhandlers,
-          ls_handler TYPE icfhandler,
-          ls_docu    TYPE icfdocu,
-          lv_active  TYPE abap_bool,
-          lv_langu   TYPE sylangu,
-          lt_parm    TYPE abap_parmbind_tab,
-          ls_parm    TYPE abap_parmbind,
-          lv_hand    TYPE string.
-    FIELD-SYMBOLS <fs> TYPE any.
+    DATA: ls_docu     TYPE icfdocu,
+          lt_handlers TYPE ty_icfhandlers,
+          ls_handler  TYPE icfhandler,
+          lv_guid     TYPE icfnodguid,
+          lv_exists   TYPE abap_bool,
+          lv_active   TYPE abap_bool,
+          lv_suffix   TYPE string,
+          lv_ok       TYPE abap_bool,
+          lv_msg      TYPE string.
 
     CLEAR rs_status.
     rs_status-url = normalize_url( iv_url ).
-    lo_tree = tree_from_url( rs_status-url ).
-    IF lo_tree IS NOT BOUND.
-      rs_status-exists  = abap_false.
-      rs_status-message = 'Service not found.'.
+
+    resolve(
+      EXPORTING iv_url     = rs_status-url
+      IMPORTING ev_guid    = lv_guid
+                ev_exists  = lv_exists
+                ev_active  = lv_active
+                ev_suffix  = lv_suffix
+                ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_status-message = lv_msg.
       RETURN.
     ENDIF.
+
+    IF lv_exists = abap_false.
+      rs_status-message = |Service not found. Missing path: '{ lv_suffix }'.|.
+      RETURN.
+    ENDIF.
+
     rs_status-exists = abap_true.
+    rs_status-active = lv_active.
 
-    TRY.
-        CALL METHOD lo_tree->('IS_ACTIVE')
-          RECEIVING
-            result = lv_active.
-        rs_status-active = boolc( lv_active = abap_true ).
-      CATCH cx_sy_dyn_call_error.
-        TRY.
-            CALL METHOD lo_tree->('GET_ACTIVE')
-              RECEIVING
-                result = lv_active.
-            rs_status-active = boolc( lv_active = abap_true ).
-          CATCH cx_sy_dyn_call_error cx_root.             "#EC NO_HANDLER
-        ENDTRY.
-      CATCH cx_root.                                      "#EC NO_HANDLER
-    ENDTRY.
+    read_node(
+      EXPORTING iv_guid     = lv_guid
+      IMPORTING es_docu     = ls_docu
+                et_handlers = lt_handlers
+                ev_ok       = lv_ok
+                ev_message  = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_status-message = lv_msg.
+      RETURN.
+    ENDIF.
 
-    TRY.
-        CALL METHOD lo_tree->('GET_HANDLERLIST')
-          RECEIVING
-            result = lt_handler.
-      CATCH cx_sy_dyn_call_error.
-        TRY.
-            CALL METHOD lo_tree->('GET_HANDLER_LIST')
-              RECEIVING
-                result = lt_handler.
-          CATCH cx_sy_dyn_call_error cx_root.             "#EC NO_HANDLER
-        ENDTRY.
-      CATCH cx_root.                                      "#EC NO_HANDLER
-    ENDTRY.
+    rs_status-description = ls_docu-icf_docu.
 
-    LOOP AT lt_handler INTO ls_handler.
-      CLEAR lv_hand.
-      ASSIGN COMPONENT 'ICFHANDLER' OF STRUCTURE ls_handler TO <fs>.
-      IF sy-subrc = 0.
-        lv_hand = <fs>.
-      ENDIF.
-      IF lv_hand IS INITIAL.
-        CONTINUE.
-      ENDIF.
+    SORT lt_handlers BY icforder.
+    LOOP AT lt_handlers INTO ls_handler WHERE icfhandler IS NOT INITIAL.
       IF rs_status-handlers IS INITIAL.
-        rs_status-handlers = lv_hand.
+        rs_status-handlers = ls_handler-icfhandler.
       ELSE.
-        CONCATENATE rs_status-handlers ',' lv_hand
+        CONCATENATE rs_status-handlers ',' ls_handler-icfhandler
                     INTO rs_status-handlers SEPARATED BY space.
       ENDIF.
     ENDLOOP.
-
-    lv_langu = sy-langu.
-    CLEAR lt_parm.
-    ls_parm-name = 'LANGU'.
-    ls_parm-kind = cl_abap_objectdescr=>exporting.
-    GET REFERENCE OF lv_langu INTO ls_parm-value.
-    INSERT ls_parm INTO TABLE lt_parm.
-    ls_parm-name = 'RESULT'.
-    ls_parm-kind = cl_abap_objectdescr=>receiving.
-    GET REFERENCE OF ls_docu INTO ls_parm-value.
-    INSERT ls_parm INTO TABLE lt_parm.
-    TRY.
-        CALL METHOD lo_tree->('GET_DOCU')
-          PARAMETER-TABLE lt_parm.
-        rs_status-description = read_docu_text( ls_docu ).
-      CATCH cx_sy_dyn_call_error cx_root.                 "#EC NO_HANDLER
-    ENDTRY.
 
     rs_status-message = 'OK'.
   ENDMETHOD.
 
 
   METHOD ensure.
-    DATA: lv_url     TYPE string,
-          lv_parent  TYPE string,
-          lv_name    TYPE icfname,
-          lv_ok      TYPE abap_bool,
-          lv_msg     TYPE string,
-          lo_parent  TYPE REF TO object,
-          lo_svc     TYPE REF TO object,
-          lt_hand    TYPE ty_icfhandlers,
-          ls_docu    TYPE icfdocu,
-          lt_parm    TYPE abap_parmbind_tab,
-          ls_parm    TYPE abap_parmbind,
-          ls_status  TYPE ty_status,
-          lv_created TYPE abap_bool,
-          lx         TYPE REF TO cx_root.
+    DATA: lv_url      TYPE string,
+          lv_parent   TYPE string,
+          lv_name     TYPE icfname,
+          lv_ok       TYPE abap_bool,
+          lv_msg      TYPE string,
+          lv_guid     TYPE icfnodguid,
+          lv_exists   TYPE abap_bool,
+          lv_active   TYPE abap_bool,
+          lv_suffix   TYPE string,
+          lt_handlers TYPE icfhndlist,
+          lv_created  TYPE abap_bool.
 
     CLEAR rs_result.
     lv_url = normalize_url( is_def-url ).
@@ -634,7 +752,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ENDIF.
 
     split_url(
-      EXPORTING iv_url = lv_url
+      EXPORTING iv_url     = lv_url
       IMPORTING ev_parent  = lv_parent
                 ev_name    = lv_name
                 ev_ok      = lv_ok
@@ -644,119 +762,120 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    lt_hand = build_handler_tab( is_def-handlers ).
-    IF lt_hand IS INITIAL.
+    lt_handlers = build_handler_list( is_def-handlers ).
+    IF lt_handlers IS INITIAL.
       rs_result-message = 'Handler list empty after normalization.'.
       RETURN.
     ENDIF.
 
+    resolve(
+      EXPORTING iv_url     = lv_url
+      IMPORTING ev_guid    = lv_guid
+                ev_exists  = lv_exists
+                ev_active  = lv_active
+                ev_suffix  = lv_suffix
+                ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
+
+    IF lv_exists = abap_false AND segment_count( lv_suffix ) > 1.
+      rs_result-message =
+        |Only the last path segment can be created. Missing in SICF: '{ lv_suffix }'.|.
+      RETURN.
+    ENDIF.
+
     IF iv_dry_run = abap_true.
-      ls_status = get_status( lv_url ).
       rs_result-ok = abap_true.
-      IF ls_status-exists = abap_true.
+      IF lv_exists = abap_true.
         rs_result-updated = abap_true.
-        rs_result-message =
-          |DRY-RUN: would update '{ lv_url }' (active={ ls_status-active }).|.
+        rs_result-message = |DRY-RUN: would update '{ lv_url }' (active={ lv_active }).|.
       ELSE.
         rs_result-created = abap_true.
-        rs_result-message =
-          |DRY-RUN: would create '{ lv_url }' under '{ lv_parent }'.|.
+        rs_result-message = |DRY-RUN: would create '{ lv_name }' under '{ lv_parent }'.|.
       ENDIF.
       RETURN.
     ENDIF.
 
-    TRY.
-        lo_svc = tree_from_url( lv_url ).
-        IF lo_svc IS BOUND.
-          lv_created = abap_false.
-        ELSE.
-          lo_parent = tree_from_url( lv_parent ).
-          IF lo_parent IS NOT BOUND.
-            rs_result-message =
-              |Parent ICF node '{ lv_parent }' not found. Create/activate it in SICF first.|.
-            RETURN.
-          ENDIF.
+    IF lv_exists = abap_true.
+      update_node(
+        EXPORTING is_def         = is_def
+                  iv_guid        = lv_guid
+                  it_handlers    = lt_handlers
+                  iv_description = is_def-description
+                  iv_active      = lv_active
+        IMPORTING ev_ok          = lv_ok
+                  ev_message     = lv_msg ).
+    ELSE.
+      create_node(
+        EXPORTING is_def         = is_def
+                  iv_parent_guid = lv_guid
+                  iv_name        = lv_name
+                  it_handlers    = lt_handlers
+                  iv_description = is_def-description
+        IMPORTING ev_guid        = lv_guid
+                  ev_ok          = lv_ok
+                  ev_message     = lv_msg ).
+      lv_created = lv_ok.
+    ENDIF.
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
 
-          create_child(
-            EXPORTING io_parent = lo_parent iv_name = lv_name
-            IMPORTING eo_child = lo_svc ev_ok = lv_ok ev_message = lv_msg ).
-          IF lv_ok = abap_false OR lo_svc IS NOT BOUND.
-            rs_result-message = lv_msg.
-            RETURN.
-          ENDIF.
-          lv_created = abap_true.
-        ENDIF.
+    rs_result-ok      = abap_true.
+    rs_result-created = lv_created.
+    rs_result-updated = boolc( lv_created = abap_false ).
+    IF lv_created = abap_true.
+      rs_result-message = |Created ICF service '{ lv_url }'.|.
+    ELSE.
+      rs_result-message = |Updated ICF service '{ lv_url }'.|.
+    ENDIF.
 
-        IF is_def-description IS NOT INITIAL.
-          CLEAR ls_docu.
-          set_docu_fields(
-            EXPORTING iv_text = is_def-description
-            CHANGING  cs_docu = ls_docu ).
-          CLEAR lt_parm.
-          ls_parm-name = 'DOCU'.
-          ls_parm-kind = cl_abap_objectdescr=>exporting.
-          GET REFERENCE OF ls_docu INTO ls_parm-value.
-          INSERT ls_parm INTO TABLE lt_parm.
-          invoke( io_obj = lo_svc iv_method = 'SET_DOCU' it_params = lt_parm ).
-        ENDIF.
-
-        set_handlers(
-          EXPORTING io_svc = lo_svc it_hand = lt_hand
-          IMPORTING ev_ok = lv_ok ev_message = lv_msg ).
-        IF lv_ok = abap_false.
-          rs_result-message = |Cannot set handlers: { lv_msg }|.
-          RETURN.
-        ENDIF.
-
-        save_node(
-          EXPORTING io_svc = lo_svc
-          IMPORTING ev_ok = lv_ok ev_message = lv_msg ).
-        IF lv_ok = abap_false.
-          rs_result-message = |Cannot save ICF node: { lv_msg }|.
-          RETURN.
-        ENDIF.
-
-        IF is_def-activate = abap_true.
-          invoke(
-            EXPORTING io_obj = lo_svc iv_method = 'ACTIVATE'
-            IMPORTING ev_ok = lv_ok ev_message = lv_msg ).
-          IF lv_ok = abap_false.
-            rs_result-ok      = abap_true.
-            rs_result-created = lv_created.
-            rs_result-updated = boolc( lv_created = abap_false ).
-            rs_result-message =
-              |Saved but activate failed ({ lv_msg }). Activate manually in SICF.|.
-            RETURN.
-          ENDIF.
-        ENDIF.
-
-        rs_result-ok      = abap_true.
-        rs_result-created = lv_created.
-        rs_result-updated = boolc( lv_created = abap_false ).
-        IF lv_created = abap_true.
-          rs_result-message = |Created ICF service '{ lv_url }'.|.
-        ELSE.
-          rs_result-message = |Updated ICF service '{ lv_url }'.|.
-        ENDIF.
-        IF is_def-activate = abap_true.
-          CONCATENATE rs_result-message 'Activated.'
-                      INTO rs_result-message SEPARATED BY space.
-        ENDIF.
-
-      CATCH cx_root INTO lx.
-        rs_result-message = |Unexpected error: { lx->get_text( ) }|.
-    ENDTRY.
+    IF is_def-activate = abap_true.
+      set_active(
+        EXPORTING iv_guid    = lv_guid
+                  iv_active  = abap_true
+        IMPORTING ev_ok      = lv_ok
+                  ev_message = lv_msg ).
+      IF lv_ok = abap_false.
+        rs_result-message =
+          |{ rs_result-message } Activation failed: { lv_msg } Activate manually in SICF.|.
+        RETURN.
+      ENDIF.
+      CONCATENATE rs_result-message 'Activated.'
+                  INTO rs_result-message SEPARATED BY space.
+    ENDIF.
   ENDMETHOD.
 
 
   METHOD activate.
-    DATA: lo_svc TYPE REF TO object,
-          lv_ok  TYPE abap_bool,
-          lv_msg TYPE string,
-          lx     TYPE REF TO cx_root.
+    DATA: lv_guid   TYPE icfnodguid,
+          lv_exists TYPE abap_bool,
+          lv_suffix TYPE string,
+          lv_ok     TYPE abap_bool,
+          lv_msg    TYPE string.
 
     CLEAR rs_result.
     rs_result-url = normalize_url( iv_url ).
+
+    resolve(
+      EXPORTING iv_url     = rs_result-url
+      IMPORTING ev_guid    = lv_guid
+                ev_exists  = lv_exists
+                ev_suffix  = lv_suffix
+                ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
+    IF lv_exists = abap_false.
+      rs_result-message = |Service '{ rs_result-url }' not found. Missing path: '{ lv_suffix }'.|.
+      RETURN.
+    ENDIF.
 
     IF iv_dry_run = abap_true.
       rs_result-ok = abap_true.
@@ -764,36 +883,45 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    TRY.
-        lo_svc = tree_from_url( rs_result-url ).
-        IF lo_svc IS NOT BOUND.
-          rs_result-message = |Service '{ rs_result-url }' not found.|.
-          RETURN.
-        ENDIF.
-        invoke(
-          EXPORTING io_obj = lo_svc iv_method = 'ACTIVATE'
-          IMPORTING ev_ok = lv_ok ev_message = lv_msg ).
-        IF lv_ok = abap_false.
-          rs_result-message = lv_msg.
-          RETURN.
-        ENDIF.
-        save_node( EXPORTING io_svc = lo_svc ).
-        rs_result-ok = abap_true.
-        rs_result-message = |Activated '{ rs_result-url }'.|.
-      CATCH cx_root INTO lx.
-        rs_result-message = lx->get_text( ).
-    ENDTRY.
+    set_active(
+      EXPORTING iv_guid    = lv_guid
+                iv_active  = abap_true
+      IMPORTING ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
+    rs_result-ok = abap_true.
+    rs_result-message = |Activated '{ rs_result-url }'.|.
   ENDMETHOD.
 
 
   METHOD deactivate.
-    DATA: lo_svc TYPE REF TO object,
-          lv_ok  TYPE abap_bool,
-          lv_msg TYPE string,
-          lx     TYPE REF TO cx_root.
+    DATA: lv_guid   TYPE icfnodguid,
+          lv_exists TYPE abap_bool,
+          lv_suffix TYPE string,
+          lv_ok     TYPE abap_bool,
+          lv_msg    TYPE string.
 
     CLEAR rs_result.
     rs_result-url = normalize_url( iv_url ).
+
+    resolve(
+      EXPORTING iv_url     = rs_result-url
+      IMPORTING ev_guid    = lv_guid
+                ev_exists  = lv_exists
+                ev_suffix  = lv_suffix
+                ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
+    IF lv_exists = abap_false.
+      rs_result-message = |Service '{ rs_result-url }' not found. Missing path: '{ lv_suffix }'.|.
+      RETURN.
+    ENDIF.
 
     IF iv_dry_run = abap_true.
       rs_result-ok = abap_true.
@@ -801,25 +929,17 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    TRY.
-        lo_svc = tree_from_url( rs_result-url ).
-        IF lo_svc IS NOT BOUND.
-          rs_result-message = |Service '{ rs_result-url }' not found.|.
-          RETURN.
-        ENDIF.
-        invoke(
-          EXPORTING io_obj = lo_svc iv_method = 'DEACTIVATE'
-          IMPORTING ev_ok = lv_ok ev_message = lv_msg ).
-        IF lv_ok = abap_false.
-          rs_result-message = lv_msg.
-          RETURN.
-        ENDIF.
-        save_node( EXPORTING io_svc = lo_svc ).
-        rs_result-ok = abap_true.
-        rs_result-message = |Deactivated '{ rs_result-url }'.|.
-      CATCH cx_root INTO lx.
-        rs_result-message = lx->get_text( ).
-    ENDTRY.
+    set_active(
+      EXPORTING iv_guid    = lv_guid
+                iv_active  = abap_false
+      IMPORTING ev_ok      = lv_ok
+                ev_message = lv_msg ).
+    IF lv_ok = abap_false.
+      rs_result-message = lv_msg.
+      RETURN.
+    ENDIF.
+    rs_result-ok = abap_true.
+    rs_result-message = |Deactivated '{ rs_result-url }'.|.
   ENDMETHOD.
 
 

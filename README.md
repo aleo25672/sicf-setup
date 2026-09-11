@@ -59,10 +59,14 @@ SE38 → `ZEVO_SICF_SETUP` → **Single service**.
 | ICF URL path | `/sap/bc/zmy_api` |
 | Handler class | `ZCL_MY_HTTP_HANDLER` |
 | Description | My API |
+| Package (blank = parent) | `ZEVO_SICF` |
+| Transport request (optional) | `DEVK900123` |
 | Activate after save | X |
 | Dry-run (no changes) | optional |
 
 Parent `/sap/bc` must already exist (standard). Save an SE38 variant per system if you do not want the include.
+
+SICF nodes are transportable. Leave **Package** blank to inherit the parent's package, or name your own `Z*` package. Leave **Transport request** blank to let SAP prompt; supply a request when running unattended.
 
 Single mode accepts **one** handler class. For several handlers on one node, use batch mode or the class API.
 
@@ -81,7 +85,7 @@ SE38 → **Batch (multi-project)**. Up to eight lines:
 - Later tokens that look like class names (`Z…`, `Y…`, `CL_…`, or containing `/` for namespaces) are extra handlers; anything else is description.
 - Parsed lines always set **activate** to true; the screen checkbox **Activate after save** still applies when you run **Ensure**.
 
-Paste lines into the report. Files under `examples/` are Git-only and are not pulled by abapGit.
+Sample: [`examples/sample.batch`](./examples/sample.batch). Paste lines into the report; files under `examples/` are Git-only and are not pulled by abapGit.
 
 ### D) Class API (post-install)
 
@@ -95,6 +99,8 @@ DATA ls_res TYPE zevo_cl_sicf_setup=>ty_result.
 ls_def-url         = '/sap/bc/zmy_api'.
 ls_def-description = 'My project API'.
 ls_def-activate    = abap_true.
+ls_def-package     = 'ZEVO_SICF'.   " optional, blank = parent's package
+ls_def-transport   = 'DEVK900123'.  " optional, blank = SAP prompts
 ls_h-classname     = 'ZCL_MY_HTTP_HANDLER'.
 APPEND ls_h TO ls_def-handlers.
 
@@ -110,7 +116,7 @@ ENDIF.
 
 | Action | Effect |
 |--------|--------|
-| Ensure (create/update) | Create the last path segment under the parent if missing; set handlers and description; optionally activate |
+| Ensure (create/update) | Create the last path segment under the parent if missing; add handlers, set description; optionally activate |
 | Activate only | Activate an existing node |
 | Deactivate only | Deactivate an existing node |
 | Show status | Exists / active / handlers / description |
@@ -126,8 +132,9 @@ The list at the end of the spool is `ok=` / `failed=` counts. Dry-run still coun
 - Backslashes become slashes.
 - A leading `/default_host` prefix is removed (SICF virtual host).
 - Paths must be at least two segments after split, e.g. `/sap/<service>`. A lone `/` is rejected.
+- The last segment is the ICF node name and must be **15 characters or less** (`ICFNAME`). Case is kept as typed, so `/sap/bc/zmy_api` creates a lower-case node.
 
-The **parent** node (everything except the last segment) must already exist. This tool does not create intermediate folders. Typical parent: `/sap/bc`.
+The path is resolved with `CL_ICF_TREE=>IF_ICF_TREE~SERVICE_FROM_URL`, which returns the deepest node that exists plus the unmatched remainder. So the tool knows both whether your node exists and which parent to create it under. Only the **last** segment is created; if more than one segment is missing, the message names the missing path and nothing is written.
 
 ## Class API
 
@@ -140,9 +147,23 @@ The **parent** node (everything except the last segment) must already exist. Thi
 | `parse_batch` | Parse `string_table` of batch lines into `ty_service_defs` |
 | `normalize_url` | Canonical ICF path (see [URL rules](#url-rules)) |
 
-Result (`ty_result`): `ok`, `created`, `updated`, `url`, `message`. If save succeeds but activate fails, `ok` is still true and the message tells you to activate in SICF.
+Definition (`ty_service_def`): `url`, `description`, `handlers`, `activate`, `package`, `transport`.
 
-`CL_ICF_TREE` method names differ by BASIS release. The class tries common names (`SERVICE_FROM_URL`, `INSERT_NODE`, `SET_HANDLERLIST`, `ORDER_SAVE`, …) and returns a clear error if none match.
+Result (`ty_result`): `ok`, `created`, `updated`, `url`, `message`. If the node is written but activation fails, `ok` is still true and the message tells you to activate in SICF.
+
+The class calls released SAP APIs directly:
+
+| Purpose | API |
+|---------|-----|
+| Locate node / parent from a path | `CL_ICF_TREE=>IF_ICF_TREE~SERVICE_FROM_URL` |
+| Read handlers, description, settings | `CL_ICF_TREE=>IF_ICF_TREE~GET_INFO_FROM_SERV` |
+| Create node | `CL_ICF_TREE=>IF_ICF_TREE~INSERT_NODE` |
+| Update node | `CL_ICF_TREE=>IF_ICF_TREE~CHANGE_NODE` |
+| Activate / deactivate | `HTTP_ACTIVATE_NODE` / `HTTP_INACTIVATE_NODE` |
+
+Handlers are **added**, not replaced: on update, handlers already assigned to the node are skipped (passing them again makes `CHANGE_NODE` fail), and handlers you drop from the list stay on the node. Remove those in SICF.
+
+If the description is empty, the existing one is kept; for a new node the node name is used, because SICF requires a description.
 
 ## After setup
 
@@ -164,19 +185,24 @@ Typical failures:
 
 | Message | What to do |
 |---------|------------|
-| Parent ICF node `…` not found | Create/activate the parent in SICF first |
+| Only the last path segment can be created. Missing in SICF: `…` | Create the intermediate nodes in SICF first |
+| Node name `…` is longer than 15 characters | Shorten the last URL segment |
 | At least one handler class is required | Fill handler on the screen, include, or batch line |
 | URL is too short | Use at least `/sap/<name>` |
-| Service not found | Ensure/activate against a path that already exists |
-| Cannot create/set/save ICF node | BASIS `CL_ICF_TREE` mismatch or missing `S_ICF_ADM` |
+| Service not found. Missing path: `…` | Ensure/activate against a path that already exists |
+| Handler class rejected | Check the class exists and implements `IF_HTTP_EXTENSION` |
+| Transport check failed | Supply a transport request, or use a local package |
+| No authorization … (`S_ICF_ADM`) | Have your admin grant ICF maintenance |
+| ICF node is locked by another user | Someone has the node open in SICF |
 
 ## Limits
 
 - Does not create virtual hosts or SSL endpoints.
-- Does not set anonymous users or ICF aliases.
+- Does not set anonymous users, logon data, or ICF aliases.
 - Does not create more than one new path segment (parent must exist).
+- Does not remove handlers, delete nodes, or set alternative service names.
+- Node names are limited to 15 characters (`ICFNAME`).
 - Batch UI is eight lines; call `parse_batch` + `ensure` in a loop for longer lists.
-- `CL_ICF_TREE` APIs vary by BASIS; unsupported releases get an error rather than a silent no-op.
 
 ## Repository layout
 
@@ -186,5 +212,5 @@ src/                      abapGit objects (PREFIX folder logic)
   zevo_sicf_setup.*       SE38 report
   zevo_sicf_setup_cfg.*   defaults include
   package.devc.xml        package ZEVO_SICF
-examples/                 sample batch lines (Git only)
+examples/sample.batch     sample batch lines (Git only)
 ```

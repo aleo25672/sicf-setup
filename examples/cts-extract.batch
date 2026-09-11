@@ -1,5 +1,0 @@
-# URL;HANDLER[;HANDLER…][;description]
-# Example batch file for the CTS Extract ICF service (separate product repo).
-# Paste lines into ZEVO_SICF_SETUP batch mode, or call parse_batch from ABAP.
-
-/sap/bc/zevo_cts_extract;ZEVO_CTS_EXTRACT_ICF;EVO CTS Extract HTTP API

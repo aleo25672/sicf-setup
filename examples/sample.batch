@@ -1,0 +1,6 @@
+# URL;HANDLER[;HANDLER…][;description]
+# Example batch lines. The last URL segment is the ICF node name (max 15 chars).
+# Paste lines into ZEVO_SICF_SETUP batch mode, or call parse_batch from ABAP.
+
+/sap/bc/zmy_api;ZCL_MY_HTTP_HANDLER;My project API
+/sap/bc/zbilling;ZCL_BILL_HANDLER;ZCL_BILL_AUTH;Billing API
