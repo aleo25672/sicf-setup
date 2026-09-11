@@ -67,7 +67,7 @@ SE38 → `ZEVO_SICF_SETUP` → **Single service**.
 
 Parent `/sap/bc` must already exist (standard). Save an SE38 variant per system if you do not want the include.
 
-SICF nodes are transportable. Leave **Package** blank to inherit the parent's package, or name your own `Z*` package. Leave **Transport request** blank to let SAP prompt; supply a request when running unattended.
+SICF nodes are transportable, so **fill in Package**. Blank means "inherit the parent's package", and under `/sap/bc` that is an SAP package, which turns the create into a modification of an SAP object and usually fails. Use your own `Z*` package, or `$TMP` for a local, non-transportable node. Leave **Transport request** blank to let SAP prompt; supply a request when running unattended.
 
 Single mode accepts **one** handler class. For several handlers on one node, use batch mode or the class API.
 
@@ -193,6 +193,7 @@ Typical failures:
 | Service not found. Missing path: `…` | Ensure/activate against a path that already exists |
 | Handler class rejected | Check the class exists and implements `IF_HTTP_EXTENSION` |
 | Transport check failed | Supply a transport request, or use a local package |
+| No authorization to create … For S_DEVELOP set Package | Blank package inherits SAP's; use a `Z*` package or `$TMP` |
 | No authorization … Run SU53 | See [Authorizations](#authorizations) |
 | ICF node is locked by another user | Someone has the node open in SICF |
 
@@ -211,7 +212,9 @@ Creating an ICF node is checked against **`S_ICF_ADM`**. Creating, changing, and
 
 If the report says you have no authorization, run **SU53** right after the failure. It shows the exact object, activity, and node GUID that was refused — hand that screen to whoever maintains roles.
 
-**If you can create the same node by hand in SICF but the report cannot**, your role is not the problem and the values in the check are. The failure message prints the parent GUID the tool passed as `ICF_NODE`; compare it with the GUID SU53 reports and with the parent's GUID in SICF (position on the parent, then *Display*). Dry-run prints the same GUID without writing anything.
+**If you can create the same node by hand in SICF but the report cannot**, check the **package** before suspecting your role. A blank package means "inherit the parent's package", and `/sap/bc` belongs to SAP, so creating there is a modification of an SAP object — which most developers are not allowed to do, and which can surface as a plain authorization failure. The SICF dialog does not hit this because it asks you for a package. Set **Package** to your own `Z*` package, or `$TMP` for a local, non-transportable node.
+
+SU53 tells the two cases apart: `S_DEVELOP` points at the package, `S_ICF_ADM` at your ICF rights. The failure message also prints the parent GUID the tool passed as `ICF_NODE`, so you can compare it with SU53 and with the parent's GUID in SICF.
 
 Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 

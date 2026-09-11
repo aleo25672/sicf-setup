@@ -500,8 +500,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
         ev_message =
-          |No authorization to create (S_ICF_ADM ACTVT 01, ICF_TYPE Node, | &&
-          |ICF_NODE = parent GUID '{ iv_parent_guid }'). Compare with SU53.|.
+          |No authorization to create. Run SU53. For S_DEVELOP set Package | &&
+          |(blank inherits the parent SAP package). For S_ICF_ADM you need | &&
+          |ACTVT 01 on ICF_NODE '{ iv_parent_guid }'.|.
       WHEN OTHERS.
         ev_message = |Cannot create ICF node: { api_message( ) }|.
     ENDCASE.
@@ -800,6 +801,10 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         rs_result-created = abap_true.
         rs_result-message =
           |DRY-RUN: would create '{ lv_name }' under '{ lv_parent }' (parent GUID { lv_guid }).|.
+        IF is_def-package IS INITIAL.
+          rs_result-message =
+            |{ rs_result-message } Package is blank, so the node inherits the parent package.|.
+        ENDIF.
       ENDIF.
       RETURN.
     ENDIF.
