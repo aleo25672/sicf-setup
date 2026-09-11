@@ -211,6 +211,8 @@ Creating an ICF node is checked against **`S_ICF_ADM`**. Creating, changing, and
 
 If the report says you have no authorization, run **SU53** right after the failure. It shows the exact object, activity, and node GUID that was refused — hand that screen to whoever maintains roles.
 
+**If you can create the same node by hand in SICF but the report cannot**, your role is not the problem and the values in the check are. The failure message prints the parent GUID the tool passed as `ICF_NODE`; compare it with the GUID SU53 reports and with the parent's GUID in SICF (position on the parent, then *Display*). Dry-run prints the same GUID without writing anything.
+
 Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 
 ## Limits

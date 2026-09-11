@@ -499,7 +499,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 25.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
-        ev_message = 'No authorization to create: need S_ICF_ADM ACTVT 01, ICF_TYPE Node, ICF_NODE = parent GUID. Run SU53.'.
+        ev_message =
+          |No authorization to create (S_ICF_ADM ACTVT 01, ICF_TYPE Node, | &&
+          |ICF_NODE = parent GUID '{ iv_parent_guid }'). Compare with SU53.|.
       WHEN OTHERS.
         ev_message = |Cannot create ICF node: { api_message( ) }|.
     ENDCASE.
@@ -611,7 +613,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 16 OR 17.
         ev_message = |Transport check failed: { api_message( ) } Supply a request, or use a local package.|.
       WHEN 26.
-        ev_message = 'No authorization to change: need S_ICF_ADM ACTVT 02, ICF_TYPE Node. Run SU53.'.
+        ev_message =
+          |No authorization to change (S_ICF_ADM ACTVT 02, ICF_TYPE Node, | &&
+          |ICF_NODE = '{ ls_service-icfparguid }'). Compare with SU53.|.
       WHEN OTHERS.
         ev_message = |Cannot update ICF node: { api_message( ) }|.
     ENDCASE.
@@ -725,7 +729,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       ENDIF.
     ENDLOOP.
 
-    rs_status-message = 'OK'.
+    rs_status-message = |OK (node GUID { lv_guid }).|.
   ENDMETHOD.
 
 
@@ -794,7 +798,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         rs_result-message = |DRY-RUN: would update '{ lv_url }' (active={ lv_active }).|.
       ELSE.
         rs_result-created = abap_true.
-        rs_result-message = |DRY-RUN: would create '{ lv_name }' under '{ lv_parent }'.|.
+        rs_result-message =
+          |DRY-RUN: would create '{ lv_name }' under '{ lv_parent }' (parent GUID { lv_guid }).|.
       ENDIF.
       RETURN.
     ENDIF.
