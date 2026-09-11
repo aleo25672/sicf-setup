@@ -362,7 +362,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         ev_message = |SICF rejected the path '{ lv_url }' (wrong URL).|.
         RETURN.
       WHEN 5.
-        ev_message = 'No authorization to read the ICF tree (S_ICF_ADM).'.
+        ev_message = 'No authorization to read the ICF tree: need S_ICF_ADM ACTVT 03. Run SU53.'.
         RETURN.
       WHEN OTHERS.
         ev_message = |Cannot read ICF tree: { api_message( ) }|.
@@ -499,7 +499,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 25.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
-        ev_message = 'No authorization to create ICF nodes (S_ICF_ADM).'.
+        ev_message = 'No authorization to create: need S_ICF_ADM ACTVT 01, ICF_TYPE Node, ICF_NODE = parent GUID. Run SU53.'.
       WHEN OTHERS.
         ev_message = |Cannot create ICF node: { api_message( ) }|.
     ENDCASE.
@@ -611,7 +611,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 16 OR 17.
         ev_message = |Transport check failed: { api_message( ) } Supply a request, or use a local package.|.
       WHEN 26.
-        ev_message = 'No authorization to change ICF nodes (S_ICF_ADM).'.
+        ev_message = 'No authorization to change: need S_ICF_ADM ACTVT 02, ICF_TYPE Node. Run SU53.'.
       WHEN OTHERS.
         ev_message = |Cannot update ICF node: { api_message( ) }|.
     ENDCASE.
@@ -660,7 +660,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 2.
         ev_message = 'ICF node is locked by another user (enqueue error).'.
       WHEN 3.
-        ev_message = 'No authorization to activate ICF nodes (S_ICF_ADM).'.
+        ev_message = 'No authorization to activate: need S_ICF_ADM ACTVT 07, ICF_TYPE Node. Run SU53.'.
       WHEN OTHERS.
         ev_message = |Activation call failed: { api_message( ) }|.
     ENDCASE.

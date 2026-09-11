@@ -20,6 +20,7 @@ Install **once per SAP system** via abapGit. Point each consumer at its URL and 
 - [Class API](#class-api)
 - [After setup](#after-setup)
 - [Prerequisites](#prerequisites)
+- [Authorizations](#authorizations)
 - [Limits](#limits)
 - [Repository layout](#repository-layout)
 
@@ -179,7 +180,7 @@ Then test the URL from a browser or HTTP client.
 
 - Handler class exists and implements `IF_HTTP_EXTENSION` (or your release’s HTTP handler interface).
 - Parent ICF path exists and is usable (usually `/sap/bc`).
-- User can maintain ICF (e.g. `S_ICF_ADM`).
+- User can maintain ICF — see [Authorizations](#authorizations).
 
 Typical failures:
 
@@ -192,8 +193,25 @@ Typical failures:
 | Service not found. Missing path: `…` | Ensure/activate against a path that already exists |
 | Handler class rejected | Check the class exists and implements `IF_HTTP_EXTENSION` |
 | Transport check failed | Supply a transport request, or use a local package |
-| No authorization … (`S_ICF_ADM`) | Have your admin grant ICF maintenance |
+| No authorization … Run SU53 | See [Authorizations](#authorizations) |
 | ICF node is locked by another user | Someone has the node open in SICF |
+
+## Authorizations
+
+Creating an ICF node is checked against **`S_ICF_ADM`**. Creating, changing, and activating are *separate* activities, so a user who can create a node may still fail to activate it.
+
+| Field | Value for this tool |
+|-------|---------------------|
+| `ACTVT` | `01` create, `02` change, `03` display, `07` activation |
+| `ICF_TYPE` | `Node` (service) |
+| `ICF_HOST` | your virtual host, normally `DEFAULT_HOST` |
+| `ICF_NODE` | GUID of the node the authorization applies to |
+
+`ICF_NODE` is a **GUID, not a path**. For creating under `/sap/bc` it is the GUID of `bc`, because the new node has no GUID yet. Granting the GUID of a higher node covers everything beneath it, so the GUID of `sap` covers all of `/sap/*`. In PFCG you do not have to look the GUID up by hand: in the authorization field, choose the node from the ICF service hierarchy and PFCG fills the GUID in.
+
+If the report says you have no authorization, run **SU53** right after the failure. It shows the exact object, activity, and node GUID that was refused — hand that screen to whoever maintains roles.
+
+Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 
 ## Limits
 
