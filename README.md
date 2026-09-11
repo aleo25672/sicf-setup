@@ -1,6 +1,6 @@
 # SICF / ICF setup for ABAP
 
-abapGit does not ship **SICF** (ICF HTTP service) nodes. This standalone utility creates, updates, activates, deactivates, and inspects them so product packages do not have to own ICF wiring.
+abapGit does not ship **SICF** (ICF HTTP service) nodes. This utility creates, updates, activates, deactivates, and inspects them.
 
 Install **once per SAP system** via abapGit. Point each consumer at its URL and handler class through the config include, the selection screen, a batch list, or a direct class call.
 
@@ -22,11 +22,10 @@ Install **once per SAP system** via abapGit. Point each consumer at its URL and 
 - [Prerequisites](#prerequisites)
 - [Limits](#limits)
 - [Repository layout](#repository-layout)
-- [Origin repository](#origin-repository)
 
 ## Install (abapGit)
 
-1. In abapGit, **New online** (or offline ZIP) and point at **this** repository, not a product repo.
+1. In abapGit, **New online** (or offline ZIP) and point at this repository.
 2. Use package **`ZEVO_SICF`** (or another `Z*` package).
 3. Pull and activate.
 4. Optional: set defaults in include **`ZEVO_SICF_SETUP_CFG`**, activate, and re-pull if you keep those constants in Git.
@@ -49,7 +48,7 @@ CONSTANTS:
   gc_sicf_cfg_desc TYPE text60    VALUE 'My HTTP API'.
 ```
 
-Leave them blank if you prefer the screen, batch lines, or a product post-install report.
+Leave them blank if you prefer the screen, batch lines, or a post-install report.
 
 ### B) Selection screen (single service)
 
@@ -82,11 +81,11 @@ SE38 → **Batch (multi-project)**. Up to eight lines:
 - Later tokens that look like class names (`Z…`, `Y…`, `CL_…`, or containing `/` for namespaces) are extra handlers; anything else is description.
 - Parsed lines always set **activate** to true; the screen checkbox **Activate after save** still applies when you run **Ensure**.
 
-Sample for CTS Extract: [`examples/cts-extract.batch`](./examples/cts-extract.batch). Paste those lines into the report; the file itself is not pulled by abapGit.
+Paste lines into the report. Files under `examples/` are Git-only and are not pulled by abapGit.
 
-### D) Class API (product post-install)
+### D) Class API (post-install)
 
-Keep ICF out of product packages: pull this repo once, then call `ensure` from your own post-install report.
+Call `ensure` from your own post-install report after this package is on the system:
 
 ```abap
 DATA ls_def TYPE zevo_cl_sicf_setup=>ty_service_def.
@@ -188,14 +187,4 @@ src/                      abapGit objects (PREFIX folder logic)
   zevo_sicf_setup_cfg.*   defaults include
   package.devc.xml        package ZEVO_SICF
 examples/                 sample batch lines (Git only)
-PUBLISH.md                how this tree was split from the CTS monorepo
 ```
-
-## Origin repository
-
-**Repo:** [`evolver/sicf-setup`](https://origin.cursor.com/evolver/sicf-setup)  
-**Clone / abapGit URL:** `https://origin.cursor.com/evolver/sicf-setup.git`
-
-Point abapGit at that URL (package `ZEVO_SICF`), not at a product repo such as CTS extract.
-
-How this standalone tree is published from the CTS monorepo: [PUBLISH.md](./PUBLISH.md).
