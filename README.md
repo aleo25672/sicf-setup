@@ -197,6 +197,7 @@ Typical failures:
 | No authorization … missing `S_ADMI_FCD` value `NADM` | Ask for that value in your role; SICF does not need it but the API does |
 | No authorization … missing `S_ICF_ADM` | Grant the activity for the printed `ICF_NODE` GUID |
 | No authorization … `S_DEVELOP` refused in Diagnose | Blank package inherits SAP's; use a `Z*` package or `$TMP` |
+| No authorization … but Diagnose shows every check granted | Not your role. Set **Package** to `$TMP` or a `Z*` package; then check the system change option (`SE06`) |
 | ICF node is locked by another user | Someone has the node open in SICF |
 
 ## Authorizations
@@ -208,13 +209,16 @@ Two objects have to be right, and they are checked by different layers:
 | `S_ADMI_FCD` | `S_ADMI_FCD` = `NADM` (network administration) | the `HTTPTREE` function layer under the ICF API |
 | `S_ICF_ADM` | `ACTVT` `01`/`02`/`07`, `ICF_TYPE` `Node`, `ICF_HOST`, `ICF_NODE` | the ICF tree itself |
 
-**`S_ADMI_FCD` = `NADM` is the one people miss.** Transaction SICF does not need it, but the API this tool calls does, so an administrator who creates the node by hand without trouble still gets refused from the report. The symptom is unmistakable once you know it: SAP message `00 150`, *"You are not authorized to use function Netzwerkadministration"* — the text is the description of the function code `NADM` and appears in whatever language that text is maintained in, so it is often German even on an English logon. Ask for the value `NADM` on `S_ADMI_FCD` in your role and the create goes through. It is a Basis-administration value, so expect your security team to ask why you need it; the honest answer is that SAP protects the ICF tree function modules with it.
+`S_ADMI_FCD` = `NADM` is the one people miss, because transaction SICF does not need it while the function layer under the ICF API does. If SAP message `00 150`, *"You are not authorized to use function Netzwerkadministration"*, comes back, that text is the description of function code `NADM` (often German even on an English logon, since it is the maintained text). Confirm it with **Diagnose** before asking for it, though — see below.
 
 For `S_ICF_ADM`, creating, changing, and activating are *separate* activities, so a user who can create a node may still fail to activate it. `ICF_NODE` is a **GUID, not a path**. For creating under `/sap/bc` it is the GUID of `bc`, because the new node has no GUID yet. Granting the GUID of a higher node covers everything beneath it, so the GUID of `sap` covers all of `/sap/*`. In PFCG you do not have to look the GUID up by hand: in the authorization field, choose the node from the ICF service hierarchy and PFCG fills the GUID in.
 
 ### Diagnosing a refusal
 
-Failure messages name the object themselves, so start by reading the message. **SU53** is worth a look too, but do not trust an empty SU53 as proof that authorizations are fine — the `NADM` refusal above did not leave a record there.
+Failure messages name the object themselves, so start by reading the message. Two cautions before you act on one:
+
+- **`NO_AUTHORITY` does not prove an authorization is missing.** It is the exception the ICF API raises for several refusals, including ones that come from the change and transport layer rather than from your role. If you hold `SAP_ALL`, or Diagnose reports every check granted, then the cause is *not* your role, whatever the wording says — read the package angle below.
+- **The quoted SAP message may be about something else.** A classic exception only carries a message when the API raised it with `MESSAGE … RAISING`; a plain `RAISE` leaves whatever was in the message buffer from earlier processing. The tool stamps a marker before each call and prints `SAP left no message` when the marker survives, so a message shown after `SAP:` is genuinely from that call — but older builds of this tool could quote a stale one.
 
 The **Diagnose** action runs the checks itself and prints what it finds. It writes nothing, so it also works as a pre-flight check against a production system:
 
@@ -238,8 +242,10 @@ Read the refused lines in order:
 
 - **`S_ADMI_FCD NADM` refused** — ask for that value in your role. Nothing else you change in the tool will help.
 - **`S_ICF_ADM` refused** — it really is your ICF role, and the printed `ICF_NODE` GUID is the value the role has to cover.
-- **`S_DEVELOP` refused, the rest granted** — the package is the problem, not ICF rights. A blank package means "inherit the parent's", and `/sap/bc` belongs to SAP, so creating there counts as modifying an SAP object. Set **Package** to your own `Z*` package, or `$TMP` for a local, non-transportable node. The SICF dialog avoids this by asking you for a package.
-- **All granted** — the refusal comes from somewhere else. The failure message carries SAP's own message text and the API `subrc`, which is what to look up next.
+- **`S_DEVELOP` refused, the rest granted** — the package is the problem, not ICF rights. Set **Package** to your own `Z*` package, or `$TMP` for a local, non-transportable node.
+- **All granted, and the call still fails with no authorization** — believe Diagnose, not the wording. The usual cause is the **package**: blank means "inherit the parent's", and `/sap/bc` belongs to SAP, so the node is created as an SAP object. Creating there needs the SAP namespace to be modifiable in the **system change option** (`SE06`), which no profile can grant you — `SAP_ALL` does not help. The SICF dialog dodges this by asking you for a package. Set **Package** to `$TMP` or a `Z*` package and retry; that single change resolves most of these.
+
+If you want certainty rather than inference, record an authorization trace with **`STAUTHTRACE`** (or `ST01`) while running the report. It logs every `AUTHORITY-CHECK` with its values and return code, including the ones that succeed. If the trace shows no failure, the refusal is not an authorization at all and the change and transport layer is where to look.
 
 Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 
