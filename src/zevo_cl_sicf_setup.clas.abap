@@ -239,12 +239,19 @@ CLASS zevo_cl_sicf_setup DEFINITION
       RETURNING
         VALUE(rv_text) TYPE string.
 
+    "! An ICF node is a cross-client repository object, so the client
+    "! setting (SCC4) can forbid it no matter what the role allows.
+    CLASS-METHODS client_change_text
+      RETURNING
+        VALUE(rv_text) TYPE string.
+
     "! Name the object that refuses, so a NO_AUTHORITY exception is
     "! actionable even when the check left no SU53 record.
     CLASS-METHODS auth_hint
       IMPORTING
         iv_guid        TYPE icfnodguid
         iv_actvt       TYPE clike
+        iv_package     TYPE devclass
       RETURNING
         VALUE(rv_text) TYPE string.
 ENDCLASS.
@@ -410,8 +417,36 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD client_change_text.
+    DATA lv_flag TYPE t000-ccnocliind.
+
+    SELECT SINGLE ccnocliind FROM t000 CLIENT SPECIFIED
+           INTO lv_flag
+           WHERE mandt = sy-mandt.
+    IF sy-subrc <> 0.
+      rv_text = 'client setting not readable'.
+      RETURN.
+    ENDIF.
+
+    CASE lv_flag.
+      WHEN space.
+        rv_text = 'changes to repository and cross-client objects allowed'.
+      WHEN '1'.
+        rv_text = 'no changes to cross-client customizing (repository still allowed)'.
+      WHEN '2'.
+        rv_text = 'NO CHANGES TO REPOSITORY OBJECTS - this blocks ICF nodes'.
+      WHEN '3'.
+        rv_text = 'NO CHANGES TO REPOSITORY OR CROSS-CLIENT OBJECTS - this blocks ICF nodes'.
+      WHEN OTHERS.
+        rv_text = |CCNOCLIIND = '{ lv_flag }'|.
+    ENDCASE.
+  ENDMETHOD.
+
+
   METHOD auth_hint.
-    DATA lv_subrc TYPE sysubrc.
+    DATA: lv_subrc   TYPE sysubrc,
+          lv_pkg     TYPE devclass,
+          lv_dev_act TYPE char2.
 
     lv_subrc = check_admi_fcd( 'NADM' ).
     IF lv_subrc <> 0.
@@ -427,11 +462,34 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    rv_text = 'S_ADMI_FCD NADM and S_ICF_ADM are both granted, so this is not'
-           && ' your role. A blank Package resolves to the parent''s SAP package,'
-           && ' where the system change option (SE06) can forbid new objects even'
-           && ' with SAP_ALL: set Package to $TMP or a Z package and retry.'
-           && ' Record STAUTHTRACE if you need to rule out authorizations.'.
+    lv_pkg = iv_package.
+    IF lv_pkg IS INITIAL.
+      lv_pkg = node_package( iv_guid ).
+    ENDIF.
+    IF iv_actvt = '01'.
+      lv_dev_act = '01'.
+    ELSE.
+      lv_dev_act = '02'.
+    ENDIF.
+    IF lv_pkg IS NOT INITIAL.
+      lv_subrc = check_develop_auth( iv_devclass = lv_pkg iv_actvt = lv_dev_act ).
+      IF lv_subrc <> 0.
+        rv_text = |You are missing S_DEVELOP ACTVT { lv_dev_act } for OBJTYPE SICF |
+               && |in package { lv_pkg }.|.
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    rv_text = 'S_ADMI_FCD NADM, S_ICF_ADM and S_DEVELOP are all granted, so this is'
+           && ' not your role and no role change will fix it.'.
+    IF iv_actvt = '01' AND iv_package IS INITIAL AND lv_pkg IS NOT INITIAL.
+      rv_text = |{ rv_text } Package is blank, so the node lands in the parent package |
+             && |{ lv_pkg }; set Package to $TMP or a Z package and retry first.|.
+    ENDIF.
+    rv_text = rv_text
+           && ' Then confirm your profile is active in this session (SU56, or log on'
+           && ' again if it was assigned recently), and record STAUTHTRACE while'
+           && ' running this report to see the check the API itself makes.'.
   ENDMETHOD.
 
 
@@ -452,6 +510,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
           lv_len        TYPE i,
           lv_subrc      TYPE sysubrc,
           lv_auth       TYPE string,
+          lv_txt        TYPE string,
           lv_line       TYPE string.
 
     lv_line = '--- ZEVO_SICF_SETUP diagnosis ---'.
@@ -544,6 +603,10 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ENDIF.
     APPEND lv_line TO rt_log.
 
+    lv_txt  = client_change_text( ).
+    lv_line = |Client change opt. : { lv_txt }|.
+    APPEND lv_line TO rt_log.
+
     lv_subrc = check_admi_fcd( 'NADM' ).
     lv_auth  = auth_text( lv_subrc ).
     lv_line  = |S_ADMI_FCD NADM    : { lv_auth }|.
@@ -580,6 +643,10 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     lv_line = 'Read the refused line above: S_ADMI_FCD NADM means ask for that value in your role,'.
     APPEND lv_line TO rt_log.
     lv_line = 'S_DEVELOP alone means set Package, S_ICF_ADM means you lack ICF rights on this path.'.
+    APPEND lv_line TO rt_log.
+    lv_line = 'All granted but the call still refuses: it is not your role. Check the client option'.
+    APPEND lv_line TO rt_log.
+    lv_line = 'above and SU56, then record STAUTHTRACE to see the check the API itself makes.'.
     APPEND lv_line TO rt_log.
   ENDMETHOD.
 
@@ -853,7 +920,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 25.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
-        lv_hint    = auth_hint( iv_guid = iv_parent_guid iv_actvt = '01' ).
+        lv_hint    = auth_hint( iv_guid    = iv_parent_guid
+                                iv_actvt   = '01'
+                                iv_package = is_def-package ).
         ev_message = |No authorization to create. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Cannot create ICF node.'.
@@ -982,7 +1051,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 16 OR 17.
         ev_message = 'Transport check failed. Supply a request, or use a local package.'.
       WHEN 26.
-        lv_hint    = auth_hint( iv_guid = iv_guid iv_actvt = '02' ).
+        lv_hint    = auth_hint( iv_guid    = iv_guid
+                                iv_actvt   = '02'
+                                iv_package = is_def-package ).
         ev_message = |No authorization to change. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Cannot update ICF node.'.
@@ -1049,7 +1120,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 2.
         ev_message = 'ICF node is locked by another user (enqueue error).'.
       WHEN 3.
-        lv_hint    = auth_hint( iv_guid = iv_guid iv_actvt = '07' ).
+        lv_hint    = auth_hint( iv_guid    = iv_guid
+                                iv_actvt   = '07'
+                                iv_package = space ).
         ev_message = |No authorization to activate. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Activation call failed.'.
