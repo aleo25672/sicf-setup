@@ -8,7 +8,8 @@
 *&
 *& Configure defaults via include ZEVO_SICF_SETUP_CFG (not product code).
 *& SICF is not covered by abapGit; this class closes that gap.
-*& Requires ICF admin authorization (e.g. S_ICF_ADM).
+*& Requires S_ICF_ADM plus S_ADMI_FCD value NADM: the ICF API checks
+*& NADM even though transaction SICF does not.
 *&
 *& Uses the released SAP APIs:
 *&   CL_ICF_TREE=>IF_ICF_TREE~SERVICE_FROM_URL   locate node from a path
@@ -107,6 +108,8 @@ CLASS zevo_cl_sicf_setup DEFINITION
         VALUE(rt_log) TYPE string_table.
 
   PRIVATE SECTION.
+    CONSTANTS gc_msg_probe TYPE c LENGTH 20 VALUE 'ZEVO_SICF_NO_MESSAGE'.
+
     TYPES ty_icfhandlers TYPE STANDARD TABLE OF icfhandler WITH DEFAULT KEY.
 
     "! SERVICE_FROM_URL returns the deepest node that exists on the path.
@@ -192,6 +195,11 @@ CLASS zevo_cl_sicf_setup DEFINITION
       RETURNING
         VALUE(rv_count) TYPE i.
 
+    "! A classic exception only fills SY-MSG* when it was raised with
+    "! MESSAGE ... RAISING. Plain RAISE leaves the previous message in the
+    "! buffer, so stamp a known one first and treat it as "API said nothing".
+    CLASS-METHODS msg_probe.
+
     CLASS-METHODS api_message
       RETURNING
         VALUE(rv_text) TYPE string.
@@ -217,9 +225,26 @@ CLASS zevo_cl_sicf_setup DEFINITION
       RETURNING
         VALUE(rv_subrc) TYPE sysubrc.
 
+    "! The HTTPTREE layer under INSERT_NODE guards itself with S_ADMI_FCD
+    "! value NADM, which transaction SICF itself does not need.
+    CLASS-METHODS check_admi_fcd
+      IMPORTING
+        iv_value        TYPE clike
+      RETURNING
+        VALUE(rv_subrc) TYPE sysubrc.
+
     CLASS-METHODS auth_text
       IMPORTING
         iv_subrc       TYPE sysubrc
+      RETURNING
+        VALUE(rv_text) TYPE string.
+
+    "! Name the object that refuses, so a NO_AUTHORITY exception is
+    "! actionable even when the check left no SU53 record.
+    CLASS-METHODS auth_hint
+      IMPORTING
+        iv_guid        TYPE icfnodguid
+        iv_actvt       TYPE clike
       RETURNING
         VALUE(rv_text) TYPE string.
 ENDCLASS.
@@ -280,9 +305,23 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD msg_probe.
+    DATA lv_dummy TYPE string.
+
+    " 00 398 is the generic '&1&2&3&4' message, present in every system
+    MESSAGE ID '00' TYPE 'S' NUMBER '398'
+            WITH gc_msg_probe space space space
+            INTO lv_dummy.
+  ENDMETHOD.
+
+
   METHOD api_message.
-    " Classic exceptions leave the failure text in SY-MSG*
     IF sy-msgid IS INITIAL OR sy-msgno IS INITIAL.
+      CLEAR rv_text.
+      RETURN.
+    ENDIF.
+    IF sy-msgid = '00' AND sy-msgno = '398' AND sy-msgv1 = gc_msg_probe.
+      " The API raised its exception without a message of its own
       CLEAR rv_text.
       RETURN.
     ENDIF.
@@ -344,6 +383,16 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
   ENDMETHOD.
 
 
+  METHOD check_admi_fcd.
+    DATA lv_value TYPE char4.
+
+    lv_value = iv_value.
+    AUTHORITY-CHECK OBJECT 'S_ADMI_FCD'
+      ID 'S_ADMI_FCD' FIELD lv_value.
+    rv_subrc = sy-subrc.
+  ENDMETHOD.
+
+
   METHOD auth_text.
     DATA lv_reason TYPE string.
 
@@ -358,6 +407,31 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         lv_reason = 'refused'.
     ENDCASE.
     rv_text = |subrc { iv_subrc } - { lv_reason }|.
+  ENDMETHOD.
+
+
+  METHOD auth_hint.
+    DATA lv_subrc TYPE sysubrc.
+
+    lv_subrc = check_admi_fcd( 'NADM' ).
+    IF lv_subrc <> 0.
+      rv_text = 'You are missing S_ADMI_FCD value NADM (network administration).'
+             && ' The ICF API checks it, transaction SICF does not, which is why'
+             && ' the same node can be created by hand.'.
+      RETURN.
+    ENDIF.
+
+    lv_subrc = check_icf_auth( iv_guid = iv_guid iv_actvt = iv_actvt ).
+    IF lv_subrc <> 0.
+      rv_text = |You are missing S_ICF_ADM ACTVT { iv_actvt } for ICF_NODE { iv_guid }.|.
+      RETURN.
+    ENDIF.
+
+    rv_text = 'S_ADMI_FCD NADM and S_ICF_ADM are both granted, so this is not'
+           && ' your role. A blank Package resolves to the parent''s SAP package,'
+           && ' where the system change option (SE06) can forbid new objects even'
+           && ' with SAP_ALL: set Package to $TMP or a Z package and retry.'
+           && ' Record STAUTHTRACE if you need to rule out authorizations.'.
   ENDMETHOD.
 
 
@@ -470,6 +544,15 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ENDIF.
     APPEND lv_line TO rt_log.
 
+    lv_subrc = check_admi_fcd( 'NADM' ).
+    lv_auth  = auth_text( lv_subrc ).
+    lv_line  = |S_ADMI_FCD NADM    : { lv_auth }|.
+    APPEND lv_line TO rt_log.
+    IF lv_subrc <> 0.
+      lv_line = '  ^ this is the one SICF does not need but the ICF API does.'.
+      APPEND lv_line TO rt_log.
+    ENDIF.
+
     lv_subrc = check_icf_auth( iv_guid = lv_guid iv_actvt = '01' ).
     lv_auth  = auth_text( lv_subrc ).
     lv_line  = |S_ICF_ADM create   : { lv_auth }|.
@@ -494,7 +577,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ENDIF.
     APPEND lv_line TO rt_log.
 
-    lv_line = 'If S_ICF_ADM is granted and S_DEVELOP refused, set Package instead of asking for ICF rights.'.
+    lv_line = 'Read the refused line above: S_ADMI_FCD NADM means ask for that value in your role,'.
+    APPEND lv_line TO rt_log.
+    lv_line = 'S_DEVELOP alone means set Package, S_ICF_ADM means you lack ICF rights on this path.'.
     APPEND lv_line TO rt_log.
   ENDMETHOD.
 
@@ -571,7 +656,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     DATA: lv_url    TYPE string,
           lv_guid   TYPE icfnodguid,
           lv_active TYPE icfactive,
-          lv_suffix TYPE icfredurl.
+          lv_suffix TYPE icfredurl,
+          lv_subrc  TYPE sysubrc,
+          lv_api    TYPE string.
 
     CLEAR: ev_guid, ev_exists, ev_active, ev_suffix, ev_message.
     ev_ok = abap_false.
@@ -582,6 +669,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    msg_probe( ).
     cl_icf_tree=>if_icf_tree~service_from_url(
       EXPORTING
         url                   = lv_url
@@ -597,17 +685,24 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         wrong_url             = 4
         no_authority          = 5
         OTHERS                = 6 ).
-    CASE sy-subrc.
+    lv_subrc = sy-subrc.
+    lv_api   = api_message( ).
+
+    CASE lv_subrc.
       WHEN 0.
         ev_ok = abap_true.
       WHEN 4.
         ev_message = |SICF rejected the path '{ lv_url }' (wrong URL).|.
         RETURN.
       WHEN 5.
-        ev_message = 'No authorization to read the ICF tree: need S_ICF_ADM ACTVT 03. Run SU53.'.
+        ev_message = 'No authorization to read the ICF tree: need S_ICF_ADM ACTVT 03.'.
         RETURN.
       WHEN OTHERS.
-        ev_message = |Cannot read ICF tree: { api_message( ) }|.
+        IF lv_api IS INITIAL.
+          ev_message = |Cannot read ICF tree (SERVICE_FROM_URL subrc { lv_subrc }).|.
+        ELSE.
+          ev_message = |Cannot read ICF tree: { lv_api } (subrc { lv_subrc }).|.
+        ENDIF.
         RETURN.
     ENDCASE.
 
@@ -622,7 +717,9 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     DATA: lv_name    TYPE icfname,
           lv_parguid TYPE icfparguid,
           lt_serv    TYPE icfservtbl,
-          lv_url     TYPE string.
+          lv_url     TYPE string,
+          lv_subrc   TYPE sysubrc,
+          lv_api     TYPE string.
     DATA ls_serv LIKE LINE OF lt_serv.
 
     CLEAR: es_service, es_docu, et_handlers, ev_message.
@@ -636,6 +733,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       RETURN.
     ENDIF.
 
+    msg_probe( ).
     cl_icf_tree=>if_icf_tree~get_info_from_serv(
       EXPORTING
         icf_name          = lv_name
@@ -651,8 +749,14 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         incorrect_service = 3
         no_authority      = 4
         OTHERS            = 5 ).
-    IF sy-subrc <> 0.
-      ev_message = |Cannot read ICF node: { api_message( ) }|.
+    lv_subrc = sy-subrc.
+    lv_api   = api_message( ).
+    IF lv_subrc <> 0.
+      IF lv_api IS INITIAL.
+        ev_message = |Cannot read ICF node (GET_INFO_FROM_SERV subrc { lv_subrc }).|.
+      ELSE.
+        ev_message = |Cannot read ICF node: { lv_api } (subrc { lv_subrc }).|.
+      ENDIF.
       RETURN.
     ENDIF.
 
@@ -675,7 +779,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
           lv_active    TYPE icfactive,
           lv_desc      TYPE string,
           lv_subrc     TYPE sysubrc,
-          lv_api       TYPE string.
+          lv_api       TYPE string,
+          lv_hint      TYPE string.
 
     CLEAR: ev_guid, ev_message.
     ev_ok = abap_false.
@@ -688,6 +793,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     lv_transport = is_def-transport.
     lv_active    = boolc( is_def-activate = abap_true ).
 
+    msg_probe( ).
     cl_icf_tree=>if_icf_tree~insert_node(
       EXPORTING
         icf_name                  = iv_name
@@ -747,7 +853,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 25.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
-        ev_message = 'No authorization to create. Run action Diagnose to see which check refuses.'.
+        lv_hint    = auth_hint( iv_guid = iv_parent_guid iv_actvt = '01' ).
+        ev_message = |No authorization to create. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Cannot create ICF node.'.
     ENDCASE.
@@ -755,6 +862,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ev_message = |{ ev_message } [INSERT_NODE subrc { lv_subrc }|.
     IF lv_api IS NOT INITIAL.
       ev_message = |{ ev_message }, SAP: { lv_api }|.
+    ELSE.
+      ev_message = |{ ev_message }, SAP left no message|.
     ENDIF.
     ev_message = |{ ev_message }, parent GUID { iv_parent_guid }]|.
   ENDMETHOD.
@@ -774,7 +883,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
           lv_ok        TYPE abap_bool,
           lv_msg       TYPE string,
           lv_subrc     TYPE sysubrc,
-          lv_api       TYPE string.
+          lv_api       TYPE string,
+          lv_hint      TYPE string.
 
     CLEAR ev_message.
     ev_ok = abap_false.
@@ -815,6 +925,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       lv_active = space.
     ENDIF.
 
+    msg_probe( ).
     cl_icf_tree=>if_icf_tree~change_node(
       EXPORTING
         icf_name                  = ls_service-icf_name
@@ -871,7 +982,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 16 OR 17.
         ev_message = 'Transport check failed. Supply a request, or use a local package.'.
       WHEN 26.
-        ev_message = 'No authorization to change. Run action Diagnose to see which check refuses.'.
+        lv_hint    = auth_hint( iv_guid = iv_guid iv_actvt = '02' ).
+        ev_message = |No authorization to change. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Cannot update ICF node.'.
     ENDCASE.
@@ -879,6 +991,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ev_message = |{ ev_message } [CHANGE_NODE subrc { lv_subrc }|.
     IF lv_api IS NOT INITIAL.
       ev_message = |{ ev_message }, SAP: { lv_api }|.
+    ELSE.
+      ev_message = |{ ev_message }, SAP left no message|.
     ENDIF.
     ev_message = |{ ev_message }, node GUID { iv_guid }]|.
   ENDMETHOD.
@@ -886,11 +1000,13 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
 
   METHOD set_active.
     DATA: lv_subrc TYPE sysubrc,
-          lv_api   TYPE string.
+          lv_api   TYPE string,
+          lv_hint  TYPE string.
 
     CLEAR ev_message.
     ev_ok = abap_false.
 
+    msg_probe( ).
     IF iv_active = abap_true.
       CALL FUNCTION 'HTTP_ACTIVATE_NODE'
         EXPORTING
@@ -933,7 +1049,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 2.
         ev_message = 'ICF node is locked by another user (enqueue error).'.
       WHEN 3.
-        ev_message = 'No authorization to activate (S_ICF_ADM ACTVT 07). Run action Diagnose.'.
+        lv_hint    = auth_hint( iv_guid = iv_guid iv_actvt = '07' ).
+        ev_message = |No authorization to activate. { lv_hint }|.
       WHEN OTHERS.
         ev_message = 'Activation call failed.'.
     ENDCASE.
@@ -941,6 +1058,8 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ev_message = |{ ev_message } [subrc { lv_subrc }|.
     IF lv_api IS NOT INITIAL.
       ev_message = |{ ev_message }, SAP: { lv_api }|.
+    ELSE.
+      ev_message = |{ ev_message }, SAP left no message|.
     ENDIF.
     ev_message = |{ ev_message }, node GUID { iv_guid }]|.
   ENDMETHOD.
