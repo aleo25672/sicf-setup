@@ -847,10 +847,21 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
           lv_desc      TYPE string,
           lv_subrc     TYPE sysubrc,
           lv_api       TYPE string,
-          lv_hint      TYPE string.
+          lv_hint      TYPE string,
+          lv_parent    TYPE icfparguid.
+
+    " Copy before clearing the exporting parameters: a caller that passes one
+    " variable for both iv_parent_guid and ev_guid would otherwise lose it,
+    " and INSERT_NODE reads an empty parent as "create a virtual host"
+    lv_parent = iv_parent_guid.
 
     CLEAR: ev_guid, ev_message.
     ev_ok = abap_false.
+
+    IF lv_parent IS INITIAL.
+      ev_message = 'Parent GUID is empty. Refusing to create a top-level node or virtual host.'.
+      RETURN.
+    ENDIF.
 
     lv_desc = iv_description.
     IF lv_desc IS INITIAL.
@@ -864,7 +875,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     cl_icf_tree=>if_icf_tree~insert_node(
       EXPORTING
         icf_name                  = iv_name
-        icfparguid                = iv_parent_guid
+        icfparguid                = lv_parent
         icfdocu                   = ls_docu
         doculang                  = sy-langu
         icfhandlst                = it_handlers
@@ -920,7 +931,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
       WHEN 25.
         ev_message = |Node name '{ iv_name }' contains characters SICF does not allow.|.
       WHEN 26.
-        lv_hint    = auth_hint( iv_guid    = iv_parent_guid
+        lv_hint    = auth_hint( iv_guid    = lv_parent
                                 iv_actvt   = '01'
                                 iv_package = is_def-package ).
         ev_message = |No authorization to create. { lv_hint }|.
@@ -934,7 +945,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
     ELSE.
       ev_message = |{ ev_message }, SAP left no message|.
     ENDIF.
-    ev_message = |{ ev_message }, parent GUID { iv_parent_guid }]|.
+    ev_message = |{ ev_message }, parent GUID { lv_parent }]|.
   ENDMETHOD.
 
 
@@ -1211,6 +1222,7 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
           lv_active   TYPE abap_bool,
           lv_suffix   TYPE string,
           lt_handlers TYPE icfhndlist,
+          lv_new_guid TYPE icfnodguid,
           lv_created  TYPE abap_bool.
 
     CLEAR rs_result.
@@ -1285,16 +1297,21 @@ CLASS zevo_cl_sicf_setup IMPLEMENTATION.
         IMPORTING ev_ok          = lv_ok
                   ev_message     = lv_msg ).
     ELSE.
+      " Distinct variables: parameters are passed by reference, so sharing
+      " one would let create_node clear the parent GUID before it uses it
       create_node(
         EXPORTING is_def         = is_def
                   iv_parent_guid = lv_guid
                   iv_name        = lv_name
                   it_handlers    = lt_handlers
                   iv_description = is_def-description
-        IMPORTING ev_guid        = lv_guid
+        IMPORTING ev_guid        = lv_new_guid
                   ev_ok          = lv_ok
                   ev_message     = lv_msg ).
       lv_created = lv_ok.
+      IF lv_ok = abap_true.
+        lv_guid = lv_new_guid.
+      ENDIF.
     ENDIF.
     IF lv_ok = abap_false.
       rs_result-message = lv_msg.
