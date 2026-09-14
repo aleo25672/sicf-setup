@@ -8,7 +8,7 @@
 *& Batch line format: URL;HANDLER[;HANDLER…][;description]
 *& Lines starting with # are comments.
 *&---------------------------------------------------------------------*
-REPORT zevo_sicf_setup.
+REPORT zevo_sicf_setup LINE-SIZE 120.
 
 INCLUDE zevo_sicf_setup_cfg.
 
@@ -245,10 +245,55 @@ FORM write_result USING    is_res  TYPE zevo_cl_sicf_setup=>ty_result
                   CHANGING cv_ok   TYPE i
                            cv_fail TYPE i.
   IF is_res-ok = abap_true.
-    WRITE: / 'OK  ', is_res-url, is_res-message.
+    WRITE: / 'OK  ', is_res-url.
+    PERFORM write_wrapped USING is_res-message abap_false.
     ADD 1 TO cv_ok.
   ELSE.
-    WRITE: / 'FAIL', is_res-url, is_res-message COLOR COL_NEGATIVE.
+    WRITE: / 'FAIL', is_res-url.
+    PERFORM write_wrapped USING is_res-message abap_true.
     ADD 1 TO cv_fail.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+* Diagnostic texts outgrew one list line, and the tail was simply lost
+* off the right edge of the window.
+FORM write_wrapped USING iv_text TYPE string
+                         iv_fail TYPE abap_bool.
+  CONSTANTS lc_width TYPE i VALUE 95.
+  DATA: lt_word TYPE STANDARD TABLE OF string WITH DEFAULT KEY,
+        lv_word TYPE string,
+        lv_line TYPE string,
+        lv_len  TYPE i.
+
+  SPLIT iv_text AT space INTO TABLE lt_word.
+  LOOP AT lt_word INTO lv_word.
+    IF lv_word IS INITIAL.
+      CONTINUE.
+    ENDIF.
+    IF lv_line IS INITIAL.
+      lv_line = lv_word.
+      CONTINUE.
+    ENDIF.
+    lv_len = strlen( lv_line ) + strlen( lv_word ) + 1.
+    IF lv_len > lc_width.
+      PERFORM write_line USING lv_line iv_fail.
+      lv_line = lv_word.
+    ELSE.
+      CONCATENATE lv_line lv_word INTO lv_line SEPARATED BY space.
+    ENDIF.
+  ENDLOOP.
+  IF lv_line IS NOT INITIAL.
+    PERFORM write_line USING lv_line iv_fail.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+FORM write_line USING iv_line TYPE string
+                      iv_fail TYPE abap_bool.
+  IF iv_fail = abap_true.
+    WRITE: /6 iv_line COLOR COL_NEGATIVE.
+  ELSE.
+    WRITE: /6 iv_line.
   ENDIF.
 ENDFORM.
