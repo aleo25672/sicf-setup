@@ -194,6 +194,7 @@ Typical failures:
 | Service not found. Missing path: `…` | Ensure/activate against a path that already exists |
 | Handler class rejected | Check the class exists and implements `IF_HTTP_EXTENSION` |
 | Transport check failed | Supply a transport request, or use a local package |
+| Parent GUID is empty. Refusing to create a top-level node or virtual host | The parent path did not resolve; run **Diagnose** and check the `Parent GUID` line |
 | No authorization … missing `S_ADMI_FCD` value `NADM` | Ask for that value in your role; SICF does not need it but the API does |
 | No authorization … missing `S_ICF_ADM` | Grant the activity for the printed `ICF_NODE` GUID |
 | No authorization … `S_DEVELOP` refused in Diagnose | Blank package inherits SAP's; use a `Z*` package or `$TMP` |
@@ -210,6 +211,8 @@ Two objects have to be right, and they are checked by different layers:
 | `S_ICF_ADM` | `ACTVT` `01`/`02`/`07`, `ICF_TYPE` `Node`, `ICF_HOST`, `ICF_NODE` | the ICF tree itself |
 
 `S_ADMI_FCD` = `NADM` is the one people miss, because transaction SICF does not need it while the function layer under the ICF API does. If SAP message `00 150`, *"You are not authorized to use function Netzwerkadministration"*, comes back, that text is the description of function code `NADM` (often German even on an English logon, since it is the maintained text). Confirm it with **Diagnose** before asking for it, though — see below.
+
+One false alarm is worth knowing about, because it produced exactly that message without any authorization being missing: if the **parent GUID in the failure text is empty**, `INSERT_NODE` read the request as a new *virtual host* rather than a node under an existing path, and creating a virtual host is a network-administration operation. The tool now refuses that call instead of making it, so an empty parent GUID reports itself plainly.
 
 For `S_ICF_ADM`, creating, changing, and activating are *separate* activities, so a user who can create a node may still fail to activate it. `ICF_NODE` is a **GUID, not a path**. For creating under `/sap/bc` it is the GUID of `bc`, because the new node has no GUID yet. Granting the GUID of a higher node covers everything beneath it, so the GUID of `sap` covers all of `/sap/*`. In PFCG you do not have to look the GUID up by hand: in the authorization field, choose the node from the ICF service hierarchy and PFCG fills the GUID in.
 
