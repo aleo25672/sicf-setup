@@ -121,6 +121,7 @@ ENDIF.
 | Activate only | Activate an existing node |
 | Deactivate only | Deactivate an existing node |
 | Show status | Exists / active / handlers / description |
+| Diagnose | Print resolved values and authorization results; write nothing |
 | Dry-run | Print intended changes; write nothing |
 
 The list at the end of the spool is `ok=` / `failed=` counts. Dry-run still counts as OK when the plan is valid.
@@ -214,7 +215,25 @@ If the report says you have no authorization, run **SU53** right after the failu
 
 **If you can create the same node by hand in SICF but the report cannot**, check the **package** before suspecting your role. A blank package means "inherit the parent's package", and `/sap/bc` belongs to SAP, so creating there is a modification of an SAP object — which most developers are not allowed to do, and which can surface as a plain authorization failure. The SICF dialog does not hit this because it asks you for a package. Set **Package** to your own `Z*` package, or `$TMP` for a local, non-transportable node.
 
-SU53 tells the two cases apart: `S_DEVELOP` points at the package, `S_ICF_ADM` at your ICF rights. The failure message also prints the parent GUID the tool passed as `ICF_NODE`, so you can compare it with SU53 and with the parent's GUID in SICF.
+**SU53 empty after a refusal?** That means no `AUTHORITY-CHECK` failed, so the block is not your ICF role — SU53 only records failed checks. Use the **Diagnose** action instead, which tests the checks itself and prints what it finds:
+
+```text
+--- ZEVO_SICF_SETUP diagnosis ---
+User / client      : DEVELOPER / 100
+Normalized URL     : /sap/bc/zsicf_setup
+Node name          : zsicf_setup (11 of 15 chars)
+Parent path        : /sap/bc
+Node               : does not exist yet (missing '/zsicf_setup')
+Parent GUID        : EEPI2GLFNOLHN7IW9R54I61RZ
+Parent package     : SHTTP (SAP-owned: creating here modifies SAP standard)
+Package requested  : blank, so parent package 'SHTTP' is used
+S_ICF_ADM create   : subrc 0 - granted
+S_DEVELOP SICF     : subrc 12 - refused, no authorization for this object at all on 'SHTTP'
+```
+
+Read it as follows. `S_ICF_ADM` granted and `S_DEVELOP` refused means the package is the problem, not ICF rights — set **Package** to a `Z*` package or `$TMP`. Both granted means the refusal comes from somewhere else, and the failure message now carries SAP's own message text and the API `subrc` so you can look up the underlying reason. `S_ICF_ADM` refused means it really is your ICF role, and the printed `ICF_NODE` GUID is the value your role has to cover.
+
+Because these checks run against the same values the tool would use, Diagnose also works as a pre-flight check before you touch a production system. It writes nothing.
 
 Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 

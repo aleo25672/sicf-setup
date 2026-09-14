@@ -31,6 +31,10 @@ SELECTION-SCREEN BEGIN OF LINE.
 PARAMETERS p_stat RADIOBUTTON GROUP act.
 SELECTION-SCREEN COMMENT 3(40) c_stat FOR FIELD p_stat.
 SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN BEGIN OF LINE.
+PARAMETERS p_diag RADIOBUTTON GROUP act.
+SELECTION-SCREEN COMMENT 3(40) c_diag FOR FIELD p_diag.
+SELECTION-SCREEN END OF LINE.
 SELECTION-SCREEN END OF BLOCK a.
 
 SELECTION-SCREEN BEGIN OF BLOCK m WITH FRAME TITLE TEXT-002.
@@ -83,6 +87,7 @@ INITIALIZATION.
   c_act   = 'Activate only'(011).
   c_deact = 'Deactivate only'(012).
   c_stat  = 'Show status'(013).
+  c_diag  = 'Diagnose (no changes)'(018).
   c_sing  = 'Single service'(014).
   c_batch = 'Batch (multi-project)'(015).
   c_actv  = 'Activate after save'(016).
@@ -130,6 +135,8 @@ FORM run.
         ls_res  TYPE zevo_cl_sicf_setup=>ty_result,
         ls_st   TYPE zevo_cl_sicf_setup=>ty_status,
         lt_line TYPE string_table,
+        lt_log  TYPE string_table,
+        lv_log  TYPE string,
         lv_ok   TYPE i,
         lv_fail TYPE i.
 
@@ -156,7 +163,23 @@ FORM run.
     APPEND ls_def TO lt_defs.
   ENDIF.
 
+  LOOP AT lt_defs INTO ls_def.
+    ls_def-package   = p_pack.
+    ls_def-transport = p_tr.
+    MODIFY lt_defs FROM ls_def INDEX sy-tabix.
+  ENDLOOP.
+
   CASE abap_true.
+    WHEN p_diag.
+      LOOP AT lt_defs INTO ls_def.
+        lt_log = zevo_cl_sicf_setup=>diagnose( ls_def ).
+        LOOP AT lt_log INTO lv_log.
+          WRITE: / lv_log.
+        ENDLOOP.
+        SKIP.
+        ADD 1 TO lv_ok.
+      ENDLOOP.
+
     WHEN p_stat.
       LOOP AT lt_defs INTO ls_def.
         ls_st = zevo_cl_sicf_setup=>get_status( ls_def-url ).
@@ -189,9 +212,7 @@ FORM run.
 
     WHEN OTHERS. " ensure
       LOOP AT lt_defs INTO ls_def.
-        ls_def-activate  = boolc( p_actv = abap_true ).
-        ls_def-package   = p_pack.
-        ls_def-transport = p_tr.
+        ls_def-activate = boolc( p_actv = abap_true ).
         ls_res = zevo_cl_sicf_setup=>ensure(
                    is_def     = ls_def
                    iv_dry_run = boolc( p_dry = abap_true ) ).

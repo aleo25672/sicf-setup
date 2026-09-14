@@ -106,6 +106,12 @@
      <LENGTH>28</LENGTH>
     </item>
     <item>
+     <ID>I</ID>
+     <KEY>018</KEY>
+     <ENTRY>Diagnose (no changes)</ENTRY>
+     <LENGTH>29</LENGTH>
+    </item>
+    <item>
      <ID>S</ID>
      <KEY>P_URL</KEY>
      <ENTRY>ICF URL path</ENTRY>
