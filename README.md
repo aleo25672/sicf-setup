@@ -232,6 +232,7 @@ Node               : does not exist yet (missing '/zsicf_setup')
 Parent GUID        : EEPI2GLFNOLHN7IW9R54I61RZ
 Parent package     : SHTTP (SAP-owned: creating here modifies SAP standard)
 Package requested  : blank, so parent package 'SHTTP' is used
+Client change opt. : changes to repository and cross-client objects allowed
 S_ADMI_FCD NADM    : subrc 12 - refused, no authorization for this object at all
   ^ this is the one SICF does not need but the ICF API does.
 S_ICF_ADM create   : subrc 0 - granted
@@ -243,9 +244,12 @@ Read the refused lines in order:
 - **`S_ADMI_FCD NADM` refused** — ask for that value in your role. Nothing else you change in the tool will help.
 - **`S_ICF_ADM` refused** — it really is your ICF role, and the printed `ICF_NODE` GUID is the value the role has to cover.
 - **`S_DEVELOP` refused, the rest granted** — the package is the problem, not ICF rights. Set **Package** to your own `Z*` package, or `$TMP` for a local, non-transportable node.
+- **`Client change opt.` says repository changes are blocked** — an ICF node is a cross-client repository object, so this client (`SCC4`) forbids it and no profile can override that. Use a client that permits repository changes.
 - **All granted, and the call still fails with no authorization** — believe Diagnose, not the wording. The usual cause is the **package**: blank means "inherit the parent's", and `/sap/bc` belongs to SAP, so the node is created as an SAP object. Creating there needs the SAP namespace to be modifiable in the **system change option** (`SE06`), which no profile can grant you — `SAP_ALL` does not help. The SICF dialog dodges this by asking you for a package. Set **Package** to `$TMP` or a `Z*` package and retry; that single change resolves most of these.
 
 If you want certainty rather than inference, record an authorization trace with **`STAUTHTRACE`** (or `ST01`) while running the report. It logs every `AUTHORITY-CHECK` with its values and return code, including the ones that succeed. If the trace shows no failure, the refusal is not an authorization at all and the change and transport layer is where to look.
+
+Holding `SAP_ALL` is not quite the same as the checks passing: a profile assigned during the current session only takes effect at the next logon. **`SU56`** shows what is actually in your user buffer right now, which is what `AUTHORITY-CHECK` reads.
 
 Because SICF nodes are transportable, creating one can additionally require rights for the package and the transport request. Using a **local package** (`$TMP`) avoids the transport entirely, at the cost of not being transportable to QA/production.
 
